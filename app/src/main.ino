@@ -44,8 +44,8 @@ void setup()
 
   // fastled setup
 	FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
+	FastLED.setBrightness(20);
 	FastLED.clear();
-	FastLED.setBrightness(100);
 }
 
 void setNumber(byte position, byte number, CRGB color)
@@ -63,13 +63,9 @@ byte cnt=0;
 
 void loop()
 {
-  /*
   for(int i=0;i<8;i++) {
-    setNumber(i,cnt,CRGB(200,255,200));
+    setNumber(i,cnt,CRGB(0,255,0));
   }
-  */
-
-  setNumber(1,cnt,CRGB(200,255,200));
 
   cnt++;
   cnt = (cnt>9) ? 0 : cnt;
