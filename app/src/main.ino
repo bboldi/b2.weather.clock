@@ -29,7 +29,7 @@
 
 #define TIME_API_URL "http://worldtimeapi.org/api/ip"
 #define LOCATION_URL "http://ip-api.com/json"
-#define OPENWEATHER_URL "http://ip-api.com/json"
+#define OPENWEATHER_URL "https://api.openweathermap.org/data/2.5/weather?appid=" _OPENWEATHER_API_KEY_
 
 // weather related
 
@@ -112,10 +112,19 @@ void connectToWiFi()
 /**
  * Fetch weather
  */
+void fetchLocation()
+{
+  // fetch location
+  delay(3000);
+}
+
+/**
+ * Fetch weather
+ */
 void fetchWeather()
 {
   // fetch location
-
+  delay(3000);
 }
 
 /**
@@ -200,7 +209,7 @@ void displayMessage(int index, CRGB color)
 
     case 2:
       // Location
-      turnOnLeds(",30,31,32,37,39,40,42,47,44,46,49,", color);
+      turnOnLeds(",30,31,32,37,39,40,42,47,44,46,51,52,54,55,56,57,", color);
     break;
 
     case 3:
@@ -247,6 +256,14 @@ void setup()
 
   displayMessage(1, messageColor);
   fetchTime();
+
+  // fetch location
+  displayMessage(2, messageColor);
+  fetchLocation();
+
+  // fetch weather
+  displayMessage(3, messageColor);
+  fetchWeather();
 
   // clear screen
   FastLED.clear();
