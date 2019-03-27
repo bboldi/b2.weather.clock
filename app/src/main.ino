@@ -29,14 +29,20 @@
 
 #define TIME_API_URL "http://worldtimeapi.org/api/ip"
 #define LOCATION_URL "http://ip-api.com/json"
-#define OPENWEATHER_URL "https://api.openweathermap.org/data/2.5/weather?appid=" _OPENWEATHER_API_KEY_
+#define OPENWEATHER_URL_FORECAST "http://api.openweathermap.org/data/2.5/forecast?units=metric&cnt=2&appid=" _OPENWEATHER_API_KEY_
+#define OPENWEATHER_URL_CURRENT "http://api.openweathermap.org/data/2.5/weather?units=metric&appid=" _OPENWEATHER_API_KEY_
 
 // weather related
 
+#define TEMP_FREEZING _TEMP_FREEZING_
+#define TEMP_COLD _TEMP_COLD_
+#define TEMP_NORMAL _TEMP_NORMAL_
+#define TEMP_HOT _TEMP_HOT_
+
 // timer/animation related
 
-#define UPDATE_TIME 10000  // update time after N millisec
-#define DOT_CHANGE_TIME 500  // animate dot after N millisec
+#define UPDATE_FORECAST 600000 // update data every N mins
+#define DOT_CHANGE_TIME 500    // animate dot after N millisec
 
 // variables
 
@@ -50,10 +56,10 @@ HTTPClient http;
 unsigned long dotAnimationTime = DOT_CHANGE_TIME;
 bool dotVisible = false;
 
+unsigned long forecastUpdated = 0;
+
 // data we fetched from time server
 
-String timeZone;
-String timeString;
 int unixTime;
 
 // when did we fetch the time exactly
@@ -65,6 +71,11 @@ unsigned long timeFetchedDiff;
 int displayH = 0;
 int displayM = 0;
 int displayS = 0;
+
+// location
+
+String lat = "";
+String lng = "";
 
 // error container
 
@@ -87,9 +98,23 @@ bool DIGIT[][7] = {
 CRGB clockColor = CRGB(255, 0, 0);
 CRGB errorColor = CRGB(255, 0, 0);
 CRGB messageColor = CRGB(0, 255, 0);
+
+CRGB temperatureColorFreezing = CRGB::DodgerBlue;
+CRGB temperatureColorCold = CRGB::White;
+CRGB temperatureColorNormal = CRGB::Gold;
+CRGB temperatureColorHot = CRGB::Red;
+
 CRGB backgroundColor = CRGB(0, 0, 0);
 
 // code
+
+/**
+ * set error code
+ */
+void setErrorCode(byte code)
+{
+  errorCode = errorCode | code;
+}
 
 /**
  * Code to connect to wifi
@@ -116,15 +141,146 @@ void fetchLocation()
 {
   // fetch location
   delay(3000);
+
+  http.begin(LOCATION_URL);
+  int responseCode = http.GET();
+
+  Serial.println("Fetch location");
+
+  if (responseCode != 200)
+  {
+    Serial.println("Error fetching location");
+    // @todo set error code
+
+    setErrorCode(0b1);
+    forecastUpdated = millis() + UPDATE_FORECAST;
+  }
+
+  String data = http.getString();
+
+  StaticJsonDocument<500> doc;
+  DeserializationError error = deserializeJson(doc, data);
+
+  String _lat = doc["lat"];
+  String _lng = doc["lon"];
+
+  lat = _lat;
+  lng = _lng;
+
+  Serial.print("\nlat: ");
+  Serial.print(lat);
+  Serial.print(" lng: ");
+  Serial.print(lng);
 }
+
+String forecast = "";
+String temperature = "";
 
 /**
  * Fetch weather
  */
 void fetchWeather()
 {
-  // fetch location
-  delay(3000);
+  String url = OPENWEATHER_URL_FORECAST;
+  url += "&lat=" + lat + "&lon=" + lng;
+
+  Serial.println(url);
+
+  // fetch weather
+  http.begin(url);
+  int responseCode = http.GET();
+
+  Serial.println("Fetch forecast");
+  Serial.println(responseCode);
+
+  if (responseCode != 200)
+  {
+    Serial.println("\nError fetching weather forecast");
+    // @todo set error code
+    // @todo set update time to 5 sec from now to try and update it
+    // maybe we should do this for the rest
+
+    setErrorCode(0b10);
+
+    // update it in 5 seconds
+    // if(millis() - forecastUpdated > UPDATE_FORECAST)
+    forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
+  }
+
+  String data = http.getString();
+  Serial.print(data);
+
+  StaticJsonDocument<500> doc;
+  DeserializationError error = deserializeJson(doc, data);
+
+  // get forecast for the next 3 hour
+  String _forecast = doc["list"][0]["weather"][0]["icon"];
+
+  Serial.println("\n---\n");
+  Serial.println(_forecast);
+
+  forecast = _forecast;
+
+  fetchTemperature();
+}
+
+// fetch temperaturek
+void fetchTemperature()
+{
+  String url = OPENWEATHER_URL_CURRENT;
+  url += "&lat=" + lat + "&lon=" + lng;
+
+  Serial.println(url);
+
+  // fetch weather
+  http.begin(url);
+  int responseCode = http.GET();
+
+  Serial.println("Fetch forecast");
+  Serial.println(responseCode);
+
+  if (responseCode != 200)
+  {
+    Serial.println("\nError fetching weather current");
+    // @todo set error code
+    // @todo set update time to 5 sec from now to try and update it
+    // maybe we should do this for the rest
+
+    setErrorCode(0b10);
+
+    // update it in 5 seconds
+    // if(millis() - forecastUpdated > UPDATE_FORECAST)
+    forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
+  }
+
+  String data = http.getString();
+  Serial.print(data);
+
+  StaticJsonDocument<500> doc;
+  DeserializationError error = deserializeJson(doc, data);
+
+  // get current temperature
+  String _temperature = doc["main"]["temp"];
+
+  Serial.println("\n---\n");
+  Serial.println(_temperature);
+  Serial.println(_temperature.toInt());
+
+  temperature = _temperature;
+}
+
+/**
+ * Display forecast data using the leds
+ */
+void displayForecast(CRGB cloudColor1, CRGB cloudColor2, CRGB sunColor,
+                     CRGB rainColor, CRGB snowColor, CRGB lightningColor)
+{
+  leds[58] = rainColor;
+  leds[59] = snowColor;
+  leds[60] = lightningColor;
+  leds[61] = sunColor;
+  leds[62] = cloudColor2;
+  leds[63] = cloudColor1;
 }
 
 /**
@@ -136,20 +292,20 @@ void fetchTime()
 
   int responseCode = 0;
 
-  do
+  http.begin(TIME_API_URL);
+  responseCode = http.GET();
+
+  Serial.println("Fetch time");
+
+  if (responseCode != 200)
   {
+    Serial.print("\nCannot connect to tiem server; Response code: ");
+    Serial.print(responseCode);
 
-    http.begin(TIME_API_URL);
-    responseCode = http.GET();
+    setErrorCode(0b100);
 
-    if (responseCode != 200)
-    {
-      Serial.print("\nCannot connect to tiem server; Response code: ");
-      Serial.print(responseCode);
-      delay(2000);
-    }
-
-  } while (responseCode != 200);
+    // @todo maybe set a refresh time here as well
+  }
 
   String data = http.getString();
   Serial.print("Data: ");
@@ -184,9 +340,7 @@ void fetchTime()
   Serial.println(hour);
   Serial.println(minute);
   Serial.println(second);
-
 }
-
 
 /**
  * Display different messages via index
@@ -195,31 +349,36 @@ void displayMessage(int index, CRGB color)
 {
   FastLED.clear();
 
-  switch(index)
+  switch (index)
   {
-    case 0:
-      // Connecting
-      turnOnLeds(",30,31,32,34,37,39,40,42,44,47,49,51,54,56,", color);
+  case 0:
+    // Connecting
+    turnOnLeds(",30,31,32,34,37,39,40,42,44,47,49,51,54,56,", color);
     break;
 
-    case 1:
-      // Sync time
-      turnOnLeds(",31,32,33,34,35,37,44,47,49,51,53,54,38,40,43,", color);
+  case 1:
+    // Sync time
+    turnOnLeds(",31,32,33,34,35,37,44,47,49,51,53,54,38,40,43,", color);
     break;
 
-    case 2:
-      // Location
-      turnOnLeds(",30,31,32,37,39,40,42,47,44,46,51,52,54,55,56,57,", color);
+  case 2:
+    // Location
+    turnOnLeds(",30,31,32,37,39,40,42,47,44,46,51,52,54,55,56,57,", color);
     break;
 
-    case 3:
-      // Weather forecast
-      turnOnLeds(",30,31,33,34,37,39,40,42,44,47,51,52,53,54,55,", color);
+  case 3:
+    // Weather forecast
+    turnOnLeds(",30,31,33,34,37,39,40,42,44,47,51,52,53,54,55,", color);
     break;
 
-    default:
-      // -------
-      turnOnLeds(",3,10,19,26,33,40,47,54,", color);
+  case 4:
+    // refresh
+    turnOnLeds(",30,33,38,37,41,40,39,44,45,48,47,51,54,", color);
+    break;
+
+  default:
+    // -------
+    turnOnLeds(",3,10,19,26,33,40,47,54,", color);
     break;
   }
 
@@ -322,8 +481,11 @@ void displayTime(int h, int m, int s)
 void animateDot()
 {
   // prepare it for millis reset
-  if(dotAnimationTime>millis()) { dotAnimationTime = 0; }
-  if(millis() - dotAnimationTime >= DOT_CHANGE_TIME)
+  if (dotAnimationTime > millis())
+  {
+    dotAnimationTime = 0;
+  }
+  if (millis() - dotAnimationTime >= DOT_CHANGE_TIME)
   {
     dotAnimationTime = millis();
     dotVisible = !dotVisible;
@@ -364,9 +526,9 @@ void setNumber(byte position, byte number, CRGB color)
  */
 void turnOnLeds(String pins, CRGB color)
 {
-  for(int i=0;i<NUM_LEDS;i++)
+  for (int i = 0; i < NUM_LEDS; i++)
   {
-    leds[i] = (pins.indexOf("," + String(i) + ",")>-1 ? color : backgroundColor);
+    leds[i] = (pins.indexOf("," + String(i) + ",") > -1 ? color : backgroundColor);
   }
 }
 
@@ -379,8 +541,7 @@ void displayError(int code)
   FastLED.clear();
 
   // display Er:
-  turnOnLeds(",0,1,2,3,4,7,10,14,15,", errorColor);
-  // leds[0] = leds[1] = leds[2] = leds[3] = leds[4] = leds[7] = leds[10] = leds[14] = leds[15] = errorColor;
+  turnOnLeds(",0,1,2,3,4,7,10,14,", errorColor);
 
   if (code > 9)
   {
@@ -394,21 +555,164 @@ void displayError(int code)
   }
 }
 
+void setTemperature(int temp)
+{
+  CRGB _color = temperatureColorHot;
+
+  if (temp <= TEMP_FREEZING)
+  {
+    _color = temperatureColorFreezing;
+  }
+  else if (temp <= TEMP_COLD)
+  {
+    _color = temperatureColorCold;
+  }
+  else if (temp <= TEMP_HOT)
+  {
+    _color = temperatureColorNormal;
+  }
+
+  // reset temp numbers
+  setNumber(4, 8, backgroundColor);
+  setNumber(5, 8, backgroundColor);
+  setNumber(6, 8, backgroundColor);
+  setNumber(7, 8, backgroundColor);
+
+  // set prefix
+
+  byte _minusLed = 0;
+  boolean _showMinus = false;
+  if (temp < 0)
+  {
+    _showMinus = true;
+  }
+  temp = abs(temp);
+
+  if (temp > 99)
+  {
+    _minusLed = 33;
+    setNumber(5, temp / 100, _color);
+    setNumber(6, (temp % 100) / 10, _color);
+    setNumber(7, temp % 10, _color);
+  }
+  else if (temp > 9)
+  {
+    _minusLed = 40;
+    setNumber(6, temp / 10, _color);
+    setNumber(7, temp % 10, _color);
+  }
+  else
+  {
+    _minusLed = 47;
+    setNumber(7, temp, _color);
+  }
+
+  if (_showMinus)
+  {
+    leds[_minusLed] = _color;
+  }
+}
+
+void setForecast(String icon)
+{
+  if (icon == "01d")
+  {
+    // clear sky
+    displayForecast(CRGB::Black, CRGB::Black, CRGB::Yellow, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "01n")
+  {
+    // clear sky night
+    displayForecast(CRGB::Black, CRGB::Black, CRGB::White, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "02d")
+  {
+    // few clouds
+    displayForecast(CRGB::LightBlue, CRGB::Blue, CRGB::Yellow, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "02n")
+  {
+    // few clouds night
+    displayForecast(CRGB::LightBlue, CRGB::Blue, CRGB::White, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "03d" || icon == "03n")
+  {
+    // scattered clouds
+    displayForecast(CRGB::LightBlue, CRGB::LightBlue, CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "04d" || icon == "04n")
+  {
+    // broken clouds
+    displayForecast(CRGB::Blue, CRGB::Gray, CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "09d" || icon == "09n")
+  {
+    // shower rain
+    displayForecast(CRGB::LightBlue, CRGB::Blue, CRGB::Black, CRGB::Blue, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "10d")
+  {
+    // rain
+    displayForecast(CRGB::Blue, CRGB::DarkSlateBlue, CRGB::Gold, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "10n")
+  {
+    // rain night
+    displayForecast(CRGB::Indigo, CRGB::DarkSlateBlue, CRGB::Silver, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Black);
+  }
+  else if (icon == "11d" || icon == "11n")
+  {
+    // thunderstorm
+    displayForecast(CRGB::Gray, CRGB::DarkSlateBlue, CRGB::Black, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Yellow);
+  }
+  else if (icon == "13d" || icon == "13n")
+  {
+    // snow
+    displayForecast(CRGB::White, CRGB::LightBlue, CRGB::Black, CRGB::Black, CRGB::White, CRGB::Black);
+  }
+  else if (icon == "50d" || icon == "50n")
+  {
+    // mist
+    displayForecast(CRGB::Gray, CRGB::DarkGray, CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+  else
+  {
+    // default
+    displayForecast(CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black, CRGB::Black);
+  }
+}
+
+/**
+ * check if we need to refresh data
+ */
+bool doUpdateForecast()
+{
+  if (millis() < forecastUpdated)
+  {
+    forecastUpdated = 0;
+  }
+
+  if (millis() - forecastUpdated > UPDATE_FORECAST)
+  {
+    forecastUpdated = millis();
+    return true;
+  }
+
+  return false;
+}
+
+int cnt = 0;
+
 /**
  * main loop
  */
 void loop()
 {
-  if(errorCode!=0)
+  if (errorCode != 0)
   {
     displayError(errorCode);
     FastLED.show();
-
-    // wait and reset
     delay(10000);
-    ESP.restart();
-    delay(10000);
-
   }
   else
   {
@@ -422,14 +726,70 @@ void loop()
     animateDot();
     displayDot(dotVisible, clockColor);
 
+    // set temperature
+
+    setTemperature(temperature.toInt());
+
+    // set forecast
+
+    /*
+		String icons[] = {
+			"01d",
+			"02d",
+			"03d",
+			"04d",
+			"09d",
+			"10d",
+			"11d",
+			"13d",
+			"50d",
+			"01n",
+			"02n",
+			"03n",
+			"04n",
+			"09n",
+			"10n",
+			"11n",
+			"13n",
+			"50n"
+		};
+
+		String _s = icons[cnt];
+    Serial.println(_s);
+		setForecast(_s);
+    */
+
+    setForecast(forecast);
+
     // @todo move this to interrupt
     if (digitalRead(BUTTON_PIN) == 1)
     {
       Serial.print("!");
+      cnt++;
+      // cnt = (cnt > sizeof(icons) / sizeof(icons[0])) ? cnt = 0 : cnt;
+      delay(300);
     }
 
     // update display
     FastLED.show();
   }
 
+  // do update forecast?
+  if (doUpdateForecast() || errorCode > 0)
+  {
+    if (errorCode > 0)
+    {
+      displayMessage(4, errorColor);
+    }
+
+    Serial.println("Refresh data");
+    setErrorCode(0);
+
+    // do everything from the start ( reconnect fetch all)
+
+    connectToWiFi();
+    fetchTime();
+    fetchLocation();
+    fetchWeather();
+  }
 }
