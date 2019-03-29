@@ -47,6 +47,7 @@
 // misc
 
 #define LED_BRIGHTNESS 255
+#define RETRY_AFTER_ERROR 10000
 
 // variables
 
@@ -153,7 +154,7 @@ void connectToWiFi()
 void fetchLocation()
 {
   // fetch location
-  delay(3000);
+  delay(500);
 
   http.begin(LOCATION_URL);
   int responseCode = http.GET();
@@ -434,7 +435,7 @@ void setup()
     _wifiDisconnected = true;
   });
 
-  delay(100);
+  delay(200);
   displayMessage(0, messageColor);
   connectToWiFi();
 
@@ -739,7 +740,7 @@ void loop()
   {
     displayError(errorCode);
     FastLED.show();
-    delay(10000);
+    delay(RETRY_AFTER_ERROR);
   }
   else
   {
