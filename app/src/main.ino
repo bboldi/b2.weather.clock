@@ -41,8 +41,12 @@
 
 // timer/animation related
 
-#define UPDATE_FORECAST 600000 // update data every N mins
+#define UPDATE_FORECAST 1200000 // update data every N mins
 #define DOT_CHANGE_TIME 500    // animate dot after N millisec
+
+// misc
+
+#define LED_BRIGHTNESS 255
 
 // variables
 
@@ -50,6 +54,10 @@
 
 CRGB leds[NUM_LEDS];
 HTTPClient http;
+WiFiEventHandler disconnectedEventHandler;
+
+// keep track of wifi status
+bool _wifiDisconnected = true;
 
 // animation
 
@@ -95,12 +103,12 @@ bool DIGIT[][7] = {
     {1, 1, 1, 1, 1, 1, 1},
     {0, 1, 1, 1, 1, 1, 1}};
 
-CRGB clockColor = CRGB(255, 0, 0);
+CRGB clockColor = CRGB::White;
 CRGB errorColor = CRGB(255, 0, 0);
 CRGB messageColor = CRGB(0, 255, 0);
 
 CRGB temperatureColorFreezing = CRGB::DodgerBlue;
-CRGB temperatureColorCold = CRGB::White;
+CRGB temperatureColorCold = CRGB::Aqua;
 CRGB temperatureColorNormal = CRGB::Gold;
 CRGB temperatureColorHot = CRGB::Red;
 
@@ -121,17 +129,22 @@ void setErrorCode(byte code)
  */
 void connectToWiFi()
 {
-  WiFi.begin(WIFI_AP, WIFI_PASS);
-  Serial.println("\nConnecting to WiFi");
-
-  while (WiFi.status() != WL_CONNECTED)
+  if(_wifiDisconnected) // reconnect only if wifi is disconnected and we need it
   {
-    Serial.print(".");
-    delay(1000);
-  }
+    WiFi.begin(WIFI_AP, WIFI_PASS);
+    Serial.println("\nConnecting to WiFi");
 
-  Serial.println("\nConnected to WiFi! IP:");
-  Serial.println(WiFi.localIP());
+    while (WiFi.status() != WL_CONNECTED)
+    {
+      Serial.print(".");
+      delay(1000);
+    }
+
+    _wifiDisconnected = false;
+
+    Serial.println("\nConnected to WiFi! IP:");
+    Serial.println(WiFi.localIP());
+  }
 }
 
 /**
@@ -160,6 +173,7 @@ void fetchLocation()
 
   StaticJsonDocument<500> doc;
   DeserializationError error = deserializeJson(doc, data);
+  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
   String _lat = doc["lat"];
   String _lng = doc["lon"];
@@ -212,6 +226,7 @@ void fetchWeather()
 
   StaticJsonDocument<500> doc;
   DeserializationError error = deserializeJson(doc, data);
+  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
   // get forecast for the next 3 hour
   String _forecast = doc["list"][0]["weather"][0]["icon"];
@@ -258,6 +273,7 @@ void fetchTemperature()
 
   StaticJsonDocument<500> doc;
   DeserializationError error = deserializeJson(doc, data);
+  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
   // get current temperature
   String _temperature = doc["main"]["temp"];
@@ -315,6 +331,7 @@ void fetchTime()
 
   StaticJsonDocument<500> doc;
   DeserializationError error = deserializeJson(doc, data);
+  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
   if (error)
   {
@@ -385,6 +402,7 @@ void displayMessage(int index, CRGB color)
   FastLED.show();
 }
 
+
 /**
  * setup loop
  */
@@ -401,11 +419,20 @@ void setup()
 
   // fastled setup
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
-  FastLED.setBrightness(20);
+  FastLED.setBrightness(LED_BRIGHTNESS);
+
   FastLED.clear();
   FastLED.show();
 
+  delay(500);
+
   // connect to wifi
+
+  disconnectedEventHandler = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event)
+  {
+    Serial.println("WiFi disconnected");
+    _wifiDisconnected = true;
+  });
 
   delay(100);
   displayMessage(0, messageColor);
@@ -786,6 +813,9 @@ void loop()
     setErrorCode(0);
 
     // do everything from the start ( reconnect fetch all)
+
+    WiFi.disconnect();
+    _wifiDisconnected = true;
 
     connectToWiFi();
     fetchTime();
