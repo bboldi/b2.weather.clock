@@ -2,9 +2,13 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>
 
 #include <FastLED.h>
 #include <ArduinoJson.h>
+
+#include <FS.h>
 
 // only added so I don't have to push my passwords to git repo
 #include <env_variables.h>
@@ -41,13 +45,15 @@
 
 // timer/animation related
 
-#define UPDATE_FORECAST 1200000 // update data every N mins
+#define UPDATE_FORECAST 900000 // update data every N mins
 #define DOT_CHANGE_TIME 500    // animate dot after N millisec
 
 // misc
 
 #define LED_BRIGHTNESS 255
 #define RETRY_AFTER_ERROR 10000
+#define CONFIG_AP_PASS _CONFIG_AP_PASSWORD_
+#define CONFIG_AP_NAME "b2.weather.clock"
 
 // variables
 
@@ -55,10 +61,7 @@
 
 CRGB leds[NUM_LEDS];
 HTTPClient http;
-WiFiEventHandler disconnectedEventHandler;
-
-// keep track of wifi status
-bool _wifiDisconnected = true;
+WiFiManager wifiManager;
 
 // animation
 
@@ -115,6 +118,10 @@ CRGB temperatureColorHot = CRGB::Red;
 
 CRGB backgroundColor = CRGB(0, 0, 0);
 
+// custom parameters
+
+char openWeatherKey[40];
+
 // code
 
 /**
@@ -130,22 +137,27 @@ void setErrorCode(byte code)
  */
 void connectToWiFi()
 {
-  if(_wifiDisconnected) // reconnect only if wifi is disconnected and we need it
-  {
-    WiFi.begin(WIFI_AP, WIFI_PASS);
-    Serial.println("\nConnecting to WiFi");
+  // try to connect
+  wifiManager.setAPCallback(configModeCallback);
 
-    while (WiFi.status() != WL_CONNECTED)
-    {
-      Serial.print(".");
-      delay(1000);
-    }
-
-    _wifiDisconnected = false;
-
-    Serial.println("\nConnected to WiFi! IP:");
-    Serial.println(WiFi.localIP());
+  // if there's a button press when restarting, go to AP
+  if (digitalRead(BUTTON_PIN) == 1) {
+    wifiManager.startConfigPortal(CONFIG_AP_NAME, CONFIG_AP_PASS);
   }
+  else {
+    wifiManager.autoConnect(CONFIG_AP_NAME, CONFIG_AP_PASS);
+  }
+
+}
+
+/**
+ * Config mode display
+ */
+void configModeCallback(WiFiManager *_wifiMan)
+{
+  Serial.println("AP config mode");
+  FastLED.clear();
+  displayMessage(5, messageColor);
 }
 
 /**
@@ -394,6 +406,11 @@ void displayMessage(int index, CRGB color)
     turnOnLeds(",30,33,38,37,41,40,39,44,45,48,47,51,54,", color);
     break;
 
+  case 5:
+    // ap config
+    turnOnLeds(",0,1,3,4,5,6,7,8,10,11,13,30,31,32,34,37,40,42,39,44,47,49,51,52,54,55,", color);
+    break;
+
   default:
     // -------
     turnOnLeds(",3,10,19,26,33,40,47,54,", color);
@@ -425,18 +442,11 @@ void setup()
   FastLED.clear();
   FastLED.show();
 
-  delay(500);
-
   // connect to wifi
 
-  disconnectedEventHandler = WiFi.onStationModeDisconnected([](const WiFiEventStationModeDisconnected& event)
-  {
-    Serial.println("WiFi disconnected");
-    _wifiDisconnected = true;
-  });
-
-  delay(200);
+  delay(500);
   displayMessage(0, messageColor);
+  delay(200);
   connectToWiFi();
 
   // fetch time
@@ -813,12 +823,7 @@ void loop()
     Serial.println("Refresh data");
     setErrorCode(0);
 
-    // do everything from the start ( reconnect fetch all)
-
-    WiFi.disconnect();
-    _wifiDisconnected = true;
-
-    connectToWiFi();
+    //connectToWiFi();
     fetchTime();
     fetchLocation();
     fetchWeather();
