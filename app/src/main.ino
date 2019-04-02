@@ -24,11 +24,6 @@
 #define COLOR_ORDER GRB
 #define NUM_LEDS 64
 
-// wifi connection
-
-#define WIFI_AP _WIFI_AP_
-#define WIFI_PASS _WIFI_PASS_
-
 // time related
 
 #define TIME_API_URL "http://worldtimeapi.org/api/ip"
@@ -54,6 +49,7 @@
 #define RETRY_AFTER_ERROR 10000
 #define CONFIG_AP_PASS _CONFIG_AP_PASSWORD_
 #define CONFIG_AP_NAME "b2.weather.clock"
+#define CONFIG_AP_TIMEOUT 180
 
 // variables
 
@@ -111,16 +107,12 @@ CRGB clockColor = CRGB::White;
 CRGB errorColor = CRGB(255, 0, 0);
 CRGB messageColor = CRGB(0, 255, 0);
 
-CRGB temperatureColorFreezing = CRGB::DodgerBlue;
-CRGB temperatureColorCold = CRGB::Aqua;
+CRGB temperatureColorFreezing = CRGB::Blue;
+CRGB temperatureColorCold = CRGB::DodgerBlue;
 CRGB temperatureColorNormal = CRGB::Gold;
 CRGB temperatureColorHot = CRGB::Red;
 
 CRGB backgroundColor = CRGB(0, 0, 0);
-
-// custom parameters
-
-char openWeatherKey[40];
 
 // code
 
@@ -135,18 +127,22 @@ void setErrorCode(byte code)
 /**
  * Code to connect to wifi
  */
-void connectToWiFi()
+bool connectToWiFi(bool init = false)
 {
-  // try to connect
-  wifiManager.setAPCallback(configModeCallback);
+  if(init)
+  {
+    // try to connect
+    wifiManager.setAPCallback(configModeCallback);
+    wifiManager.setConfigPortalTimeout(CONFIG_AP_TIMEOUT);
 
-  // if there's a button press when restarting, go to AP
-  if (digitalRead(BUTTON_PIN) == 1) {
-    wifiManager.startConfigPortal(CONFIG_AP_NAME, CONFIG_AP_PASS);
+    // if there's a button press when restarting, go to AP
+    if (digitalRead(BUTTON_PIN) == 1) {
+      wifiManager.startConfigPortal(CONFIG_AP_NAME, CONFIG_AP_PASS);
+      return true;
+    }
   }
-  else {
-    wifiManager.autoConnect(CONFIG_AP_NAME, CONFIG_AP_PASS);
-  }
+
+  wifiManager.autoConnect(CONFIG_AP_NAME, CONFIG_AP_PASS);
 
 }
 
@@ -420,7 +416,6 @@ void displayMessage(int index, CRGB color)
   FastLED.show();
 }
 
-
 /**
  * setup loop
  */
@@ -447,7 +442,7 @@ void setup()
   delay(500);
   displayMessage(0, messageColor);
   delay(200);
-  connectToWiFi();
+  connectToWiFi(true);
 
   // fetch time
 
@@ -635,14 +630,14 @@ void setTemperature(int temp)
   }
   else if (temp > 9)
   {
-    _minusLed = 40;
-    setNumber(6, temp / 10, _color);
-    setNumber(7, temp % 10, _color);
+    _minusLed = 33;
+    setNumber(5, temp / 10, _color);
+    setNumber(6, temp % 10, _color);
   }
   else
   {
-    _minusLed = 47;
-    setNumber(7, temp, _color);
+    _minusLed = 40;
+    setNumber(6, temp, _color);
   }
 
   if (_showMinus)
@@ -770,7 +765,6 @@ void loop()
 
     // set forecast
 
-    /*
 		String icons[] = {
 			"01d",
 			"02d",
@@ -792,11 +786,6 @@ void loop()
 			"50n"
 		};
 
-		String _s = icons[cnt];
-    Serial.println(_s);
-		setForecast(_s);
-    */
-
     setForecast(forecast);
 
     // @todo move this to interrupt
@@ -806,6 +795,9 @@ void loop()
       cnt++;
       // cnt = (cnt > sizeof(icons) / sizeof(icons[0])) ? cnt = 0 : cnt;
       delay(300);
+
+      temperature = String(random(-200,200));
+      forecast = icons[random(0, sizeof(icons) / sizeof(icons[0]))];
     }
 
     // update display
@@ -823,7 +815,7 @@ void loop()
     Serial.println("Refresh data");
     setErrorCode(0);
 
-    //connectToWiFi();
+    connectToWiFi();
     fetchTime();
     fetchLocation();
     fetchWeather();
