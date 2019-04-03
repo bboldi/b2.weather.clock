@@ -115,6 +115,8 @@ bool DIGIT[][7] = {
 CRGB clockColor = CRGB::White;
 CRGB errorColor = CRGB(255, 0, 0);
 CRGB messageColor = CRGB(0, 255, 0);
+CRGB indicatorColorOut = CRGB::Green;
+CRGB indicatorColorIn = CRGB::Purple;
 
 CRGB temperatureColorFreezing = CRGB::Blue;
 CRGB temperatureColorCold = CRGB::DodgerBlue;
@@ -734,6 +736,12 @@ void setTemperature(int temp)
   }
 
   turnOnLeds(TEMP_SUFFIX, _color, false);
+
+  // show indicator if possible
+  if(temp<99)
+  {
+    turnOnLeds( showForecast ? ",31,34," : ",32,35,", showForecast ? indicatorColorOut : indicatorColorIn, false);
+  }
 }
 
 void setForecast(String icon)
@@ -865,18 +873,20 @@ void loop()
     {
       // set temperature
       setTemperature(temperature.toInt());
-      // set forecast
-      setForecast(forecast);
     }
     else
     {
       setTemperature((int)devTemp);
-      setForecast("");
     }
+
+    // set forecast
+    setForecast(forecast);
 
     // @todo move this to interrupt
     if (digitalRead(BUTTON_PIN) == 1)
     {
+      showForecast = !showForecast;
+      changeTempDisplay = millis();
       delay(300);
     }
 
