@@ -8,7 +8,8 @@
 #include <FastLED.h>
 #include <ArduinoJson.h>
 
-#include <FS.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 
 // only added so I don't have to push my passwords to git repo
 #include <env_variables.h>
@@ -17,6 +18,7 @@
 
 #define BUTTON_PIN 14
 #define LED_PIN 12
+#define DS18B20_PIN 2
 
 // fastled consts
 
@@ -42,6 +44,7 @@
 
 #define UPDATE_FORECAST 900000 // update data every N mins
 #define DOT_CHANGE_TIME 500    // animate dot after N millisec
+#define TEMP_CHANGE 30000      // how often to change temp display
 
 // misc
 
@@ -66,6 +69,9 @@ WiFiManager wifiManager;
 
 unsigned long dotAnimationTime = DOT_CHANGE_TIME;
 bool dotVisible = false;
+
+unsigned long changeTempDisplay = TEMP_CHANGE;
+bool showForecast = true;
 
 unsigned long forecastUpdated = 0;
 
@@ -116,6 +122,15 @@ CRGB temperatureColorNormal = CRGB::Gold;
 CRGB temperatureColorHot = CRGB::Red;
 
 CRGB backgroundColor = CRGB(0, 0, 0);
+
+// onewire
+
+OneWire oneWire(DS18B20_PIN);
+DallasTemperature DS18B20(&oneWire);
+DeviceAddress devAddr;
+float devTemp;
+
+// temp change
 
 // code
 
@@ -433,6 +448,46 @@ void displayMessage(int index, CRGB color)
   FastLED.show();
 }
 
+//Convert device id to String
+String GetAddressToString(DeviceAddress deviceAddress){
+  String str = "";
+  for (uint8_t i = 0; i < 8; i++){
+    if( deviceAddress[i] < 16 ) str += String(0, HEX);
+    str += String(deviceAddress[i], HEX);
+  }
+  return str;
+}
+
+/**
+ * Read ds temperature
+ */
+void ReadDSTemp()
+{
+  DS18B20.requestTemperatures();
+  devTemp = DS18B20.getTempC(devAddr);
+}
+
+/**
+ * Setup DS sensor
+ */
+void DS18B20Setup()
+{
+  delay(500);
+  DS18B20.begin();
+  DS18B20.getAddress(devAddr, 0);
+
+  ReadDSTemp();
+
+  Serial.println("ADDR:");
+  Serial.println(GetAddressToString(devAddr));
+
+  Serial.println("RES:");
+  Serial.println(DS18B20.getResolution(devAddr));
+
+  Serial.println("TEMP_C:");
+  Serial.println(devTemp);
+}
+
 /**
  * setup loop
  */
@@ -446,6 +501,10 @@ void setup()
 
   // pin definitions
   pinMode(BUTTON_PIN, INPUT);
+
+  // temp sensor
+
+  DS18B20Setup();
 
   // fastled setup
   FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
@@ -522,6 +581,30 @@ void displayTime(int h, int m, int s)
   {
     setNumber(2, 0, clockColor);
     setNumber(3, m, clockColor);
+  }
+}
+
+/**
+ * change display of inside / ourside temperature
+ */
+void tempDisplaySwitch()
+{
+  // prepare it for millis reset
+  if (changeTempDisplay > millis())
+  {
+    changeTempDisplay = 0;
+  }
+
+  if (millis() - changeTempDisplay >= TEMP_CHANGE)
+  {
+    changeTempDisplay = millis();
+    showForecast = !showForecast;
+
+    Serial.println("switch temp display");
+    Serial.println(showForecast ? "F" : "I");
+
+    // refresh temperature if needed
+    if(!showForecast) { ReadDSTemp(); }
   }
 }
 
@@ -741,6 +824,16 @@ bool doUpdateForecast()
   return false;
 }
 
+int insideTemp = 0;
+
+/**
+ * Read temperature sensor
+ */
+void readTempSensor()
+{
+
+}
+
 int cnt = 0;
 
 /**
@@ -764,47 +857,27 @@ void loop()
     // animate dot
 
     animateDot();
+    tempDisplaySwitch();
     displayDot(dotVisible, clockColor);
 
-    // set temperature
 
-    setTemperature(temperature.toInt());
-
-    // set forecast
-
-		String icons[] = {
-			"01d",
-			"02d",
-			"03d",
-			"04d",
-			"09d",
-			"10d",
-			"11d",
-			"13d",
-			"50d",
-			"01n",
-			"02n",
-			"03n",
-			"04n",
-			"09n",
-			"10n",
-			"11n",
-			"13n",
-			"50n"
-		};
-
-    setForecast(forecast);
+    if(showForecast)
+    {
+      // set temperature
+      setTemperature(temperature.toInt());
+      // set forecast
+      setForecast(forecast);
+    }
+    else
+    {
+      setTemperature((int)devTemp);
+      setForecast("");
+    }
 
     // @todo move this to interrupt
     if (digitalRead(BUTTON_PIN) == 1)
     {
-      Serial.print("!");
-      cnt++;
-      // cnt = (cnt > sizeof(icons) / sizeof(icons[0])) ? cnt = 0 : cnt;
       delay(300);
-
-      temperature = String(random(-99,200));
-      forecast = icons[random(0, sizeof(icons) / sizeof(icons[0]))];
     }
 
     // update display
