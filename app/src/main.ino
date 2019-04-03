@@ -51,6 +51,9 @@
 #define CONFIG_AP_NAME "b2.weather.clock"
 #define CONFIG_AP_TIMEOUT 180
 
+#define TEMP_SUFFIX ",54,51,53," // "c"
+// #define TEMP_SUFFIX ",51,52,54,55," // "F"
+
 // variables
 
 // misc
@@ -115,6 +118,20 @@ CRGB temperatureColorHot = CRGB::Red;
 CRGB backgroundColor = CRGB(0, 0, 0);
 
 // code
+
+/**
+ * Turn on leds by index
+ * pins - list of pins, before and after each ther must be a "," example ",1,2,3,4,"
+ * color - color of the pins
+ */
+void turnOnLeds(String pins, CRGB color, boolean doClear = true )
+{
+  for (int i = 0; i < NUM_LEDS; i++)
+  {
+    leds[i] = (pins.indexOf("," + String(i) + ",") > -1 ? color : ( doClear ? backgroundColor : leds[i]) );
+  }
+}
+
 
 /**
  * set error code
@@ -553,19 +570,6 @@ void setNumber(byte position, byte number, CRGB color)
 }
 
 /**
- * Turn on leds by index
- * pins - list of pins, before and after each ther must be a "," example ",1,2,3,4,"
- * color - color of the pins
- */
-void turnOnLeds(String pins, CRGB color)
-{
-  for (int i = 0; i < NUM_LEDS; i++)
-  {
-    leds[i] = (pins.indexOf("," + String(i) + ",") > -1 ? color : backgroundColor);
-  }
-}
-
-/**
  * Helper function to display error
  */
 void displayError(int code)
@@ -615,6 +619,7 @@ void setTemperature(int temp)
 
   byte _minusLed = 0;
   boolean _showMinus = false;
+
   if (temp < 0)
   {
     _showMinus = true;
@@ -624,9 +629,9 @@ void setTemperature(int temp)
   if (temp > 99)
   {
     _minusLed = 33;
-    setNumber(5, temp / 100, _color);
-    setNumber(6, (temp % 100) / 10, _color);
-    setNumber(7, temp % 10, _color);
+    setNumber(4, temp / 100, _color);
+    setNumber(5, (temp % 100) / 10, _color);
+    setNumber(6, temp % 10, _color);
   }
   else if (temp > 9)
   {
@@ -644,6 +649,8 @@ void setTemperature(int temp)
   {
     leds[_minusLed] = _color;
   }
+
+  turnOnLeds(TEMP_SUFFIX, _color, false);
 }
 
 void setForecast(String icon)
@@ -796,7 +803,7 @@ void loop()
       // cnt = (cnt > sizeof(icons) / sizeof(icons[0])) ? cnt = 0 : cnt;
       delay(300);
 
-      temperature = String(random(-200,200));
+      temperature = String(random(-99,200));
       forecast = icons[random(0, sizeof(icons) / sizeof(icons[0]))];
     }
 
