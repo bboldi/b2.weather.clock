@@ -116,7 +116,7 @@ CRGB clockColor = CRGB::White;
 CRGB errorColor = CRGB(255, 0, 0);
 CRGB messageColor = CRGB(0, 255, 0);
 CRGB indicatorColorOut = CRGB::Green;
-CRGB indicatorColorIn = CRGB::Purple;
+CRGB indicatorColorIn = CRGB::Green;
 
 CRGB temperatureColorFreezing = CRGB::Blue;
 CRGB temperatureColorCold = CRGB::DodgerBlue;
