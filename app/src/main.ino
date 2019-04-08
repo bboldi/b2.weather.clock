@@ -44,7 +44,7 @@
 
 #define UPDATE_FORECAST 900000 // update data every N mins
 #define DOT_CHANGE_TIME 500    // animate dot after N millisec
-#define TEMP_CHANGE 30000      // how often to change temp display
+#define TEMP_CHANGE 15000      // how often to change temp display
 
 // misc
 
@@ -147,6 +147,14 @@ void turnOnLeds(String pins, CRGB color, boolean doClear = true )
   {
     leds[i] = (pins.indexOf("," + String(i) + ",") > -1 ? color : ( doClear ? backgroundColor : leds[i]) );
   }
+}
+
+/**
+ * Reset error code
+ */
+void resetErrorCode()
+{
+  errorCode = 0;
 }
 
 
@@ -320,6 +328,7 @@ void fetchTemperature()
 
   // get current temperature
   String _temperature = doc["main"]["temp"];
+  // _temperature = String(_temperature.toFloat()+0.5);
 
   Serial.println("\n---\n");
   Serial.println(_temperature);
@@ -740,7 +749,7 @@ void setTemperature(int temp)
   // show indicator if possible
   if(temp<99)
   {
-    turnOnLeds( showForecast ? ",31,34," : ",32,35,", showForecast ? indicatorColorOut : indicatorColorIn, false);
+    turnOnLeds( showForecast ? ",31," : ",30,", showForecast ? indicatorColorOut : indicatorColorIn, false);
   }
 }
 
@@ -903,7 +912,7 @@ void loop()
     }
 
     Serial.println("Refresh data");
-    setErrorCode(0);
+    resetErrorCode();
 
     connectToWiFi();
     fetchTime();
