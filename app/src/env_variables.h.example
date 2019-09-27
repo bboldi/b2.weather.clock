@@ -1,0 +1,10 @@
+#define _OPENWEATHER_API_KEY_ ""
+
+#define _CONFIG_AP_PASSWORD_ ""
+
+#define _TEMP_FREEZING_ 0
+#define _TEMP_COLD_ 18
+#define _TEMP_NORMAL_ 21
+#define _TEMP_HOT_ 25
+#define _TEMP_SUFFIX_ ",54,51,53,56," // "c"
+// #define _TEMP_SUFFIX_ ",51,52,54,55," // "F"
