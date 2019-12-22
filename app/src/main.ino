@@ -210,6 +210,7 @@ void fetchLocation()
   int responseCode = http.GET();
 
   Serial.println("Fetch location");
+  Serial.println(responseCode);
 
   if (responseCode != 200)
   {
@@ -222,7 +223,7 @@ void fetchLocation()
 
   String data = http.getString();
 
-  StaticJsonDocument<500> doc;
+  StaticJsonDocument<1500> doc;
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -273,9 +274,8 @@ void fetchWeather()
   }
 
   String data = http.getString();
-  Serial.print(data);
 
-  StaticJsonDocument<500> doc;
+  StaticJsonDocument<1500> doc;
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -793,17 +793,17 @@ void setForecast(String icon)
   else if (icon == "10d")
   {
     // rain
-    displayForecast(CRGB::Blue, CRGB::DarkSlateBlue, CRGB::Gold, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Black);
+    displayForecast(CRGB::Blue, CRGB::Gray, CRGB::Gold, CRGB::Blue, CRGB::Black, CRGB::Black);
   }
   else if (icon == "10n")
   {
     // rain night
-    displayForecast(CRGB::Indigo, CRGB::DarkSlateBlue, CRGB::Silver, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Black);
+    displayForecast(CRGB::Blue, CRGB::Blue, CRGB::Silver, CRGB::Blue, CRGB::Black, CRGB::Black);
   }
   else if (icon == "11d" || icon == "11n")
   {
     // thunderstorm
-    displayForecast(CRGB::Gray, CRGB::DarkSlateBlue, CRGB::Black, CRGB::DeepSkyBlue, CRGB::Black, CRGB::Yellow);
+    displayForecast(CRGB::Gray, CRGB::Blue, CRGB::Black, CRGB::Blue, CRGB::Black, CRGB::Yellow);
   }
   else if (icon == "13d" || icon == "13n")
   {
