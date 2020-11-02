@@ -49,7 +49,7 @@
 // misc
 
 #define LED_BRIGHTNESS 255
-#define RETRY_AFTER_ERROR 10000
+#define RETRY_AFTER_ERROR 15000
 #define CONFIG_AP_PASS _CONFIG_AP_PASSWORD_
 #define CONFIG_AP_NAME "b2.weather.clock"
 #define CONFIG_AP_TIMEOUT 180
@@ -62,7 +62,13 @@
 // misc
 
 CRGB leds[NUM_LEDS];
-HTTPClient http;
+
+HTTPClient httpTime;
+HTTPClient httpLocation;
+HTTPClient httpForecast;
+HTTPClient httpTemperature;
+HTTPClient httpSendTemp;
+
 WiFiManager wifiManager;
 
 // animation
@@ -124,6 +130,8 @@ CRGB temperatureColorNormal = CRGB::Gold;
 CRGB temperatureColorHot = CRGB::Red;
 
 CRGB backgroundColor = CRGB(0, 0, 0);
+
+CRGB dotFadeContainer = CRGB(0, 0, 0);
 
 // onewire
 
@@ -206,10 +214,12 @@ void fetchLocation()
   // fetch location
   delay(500);
 
-  http.begin(LOCATION_URL);
-  int responseCode = http.GET();
+  httpLocation.begin(LOCATION_URL);
+  int responseCode = httpLocation.GET();
 
   Serial.println("Fetch location");
+  Serial.println(LOCATION_URL);
+  Serial.println(httpLocation.getString());
   Serial.println(responseCode);
 
   if (responseCode != 200)
@@ -221,9 +231,9 @@ void fetchLocation()
     forecastUpdated = millis() + UPDATE_FORECAST;
   }
 
-  String data = http.getString();
+  String data = httpLocation.getString();
 
-  StaticJsonDocument<1500> doc;
+  DynamicJsonDocument doc(2048);
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -237,6 +247,7 @@ void fetchLocation()
   Serial.print(lat);
   Serial.print(" lng: ");
   Serial.print(lng);
+  httpLocation.end();
 }
 
 String forecast = "";
@@ -253,8 +264,8 @@ void fetchWeather()
   Serial.println(url);
 
   // fetch weather
-  http.begin(url);
-  int responseCode = http.GET();
+  httpForecast.begin(url);
+  int responseCode = httpForecast.GET();
 
   Serial.println("Fetch forecast");
   Serial.println(responseCode);
@@ -273,9 +284,9 @@ void fetchWeather()
     forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
   }
 
-  String data = http.getString();
+  String data = httpForecast.getString();
 
-  StaticJsonDocument<1500> doc;
+  DynamicJsonDocument doc(2048);
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -286,6 +297,8 @@ void fetchWeather()
   Serial.println(_forecast);
 
   forecast = _forecast;
+
+  httpForecast.end();
 
   fetchTemperature();
 }
@@ -299,8 +312,8 @@ void fetchTemperature()
   Serial.println(url);
 
   // fetch weather
-  http.begin(url);
-  int responseCode = http.GET();
+  httpTemperature.begin(url);
+  int responseCode = httpTemperature.GET();
 
   Serial.println("Fetch forecast");
   Serial.println(responseCode);
@@ -319,10 +332,10 @@ void fetchTemperature()
     forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
   }
 
-  String data = http.getString();
+  String data = httpTemperature.getString();
   Serial.print(data);
 
-  StaticJsonDocument<500> doc;
+  DynamicJsonDocument doc(2048);
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -335,6 +348,7 @@ void fetchTemperature()
   Serial.println(_temperature.toInt());
 
   temperature = _temperature;
+  httpTemperature.end();
 }
 
 /**
@@ -360,8 +374,8 @@ void fetchTime()
 
   int responseCode = 0;
 
-  http.begin(TIME_API_URL);
-  responseCode = http.GET();
+  httpTime.begin(TIME_API_URL);
+  responseCode = httpTime.GET();
 
   Serial.println("Fetch time");
 
@@ -375,13 +389,13 @@ void fetchTime()
     // @todo maybe set a refresh time here as well
   }
 
-  String data = http.getString();
+  String data = httpTime.getString();
   Serial.print("Data: ");
   Serial.print(data);
 
   // parse data, fetch current time
 
-  StaticJsonDocument<500> doc;
+  DynamicJsonDocument doc(2048);
   DeserializationError error = deserializeJson(doc, data);
   if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
 
@@ -409,6 +423,7 @@ void fetchTime()
   Serial.println(hour);
   Serial.println(minute);
   Serial.println(second);
+  httpTime.end();
 }
 
 /**
@@ -479,6 +494,26 @@ void ReadDSTemp()
 }
 
 /**
+ * Send temperature to an url
+ */
+void sendTemperature()
+{
+  if(_SEND_TEMP_URI!="")
+  {
+    httpSendTemp.begin(_SEND_TEMP_URI+String(devTemp));
+    if(_SEND_TEMP_USER!="")
+    {
+      httpSendTemp.setAuthorization(_SEND_TEMP_USER, _SEND_TEMP_PASS);
+    }
+    int responseCode = httpSendTemp.GET();
+    Serial.println("send temperature");
+    Serial.println(responseCode);
+    Serial.println(httpSendTemp.getString());
+    httpSendTemp.end();
+  }
+}
+
+/**
  * Setup DS sensor
  */
 void DS18B20Setup()
@@ -532,7 +567,6 @@ void setup()
   connectToWiFi(true);
 
   // fetch time
-
   displayMessage(1, messageColor);
   fetchTime();
 
@@ -615,7 +649,11 @@ void tempDisplaySwitch()
     Serial.println(showForecast ? "F" : "I");
 
     // refresh temperature if needed
-    if(!showForecast) { ReadDSTemp(); }
+    if(!showForecast) { 
+      ReadDSTemp(); 
+      // send temperature to the http link if required
+      sendTemperature();
+    }
   }
 }
 
@@ -634,6 +672,31 @@ void animateDot()
     dotAnimationTime = millis();
     dotVisible = !dotVisible;
   }
+}
+
+int dotFadeRate = 0;
+int dotFadeRateChange = 1;
+
+void fadeDot()
+{
+  int changeBy = 2;
+  int min = 0;
+  int max = 255;
+  dotFadeRate+=dotFadeRateChange;
+
+  if(dotFadeRate<min)
+  {
+    dotFadeRate=0;
+    dotFadeRateChange=changeBy;
+  }
+
+  if(dotFadeRate>max)
+  {
+    dotFadeRate=max;
+    dotFadeRateChange=-changeBy;
+  }
+
+  dotFadeContainer = CRGB(dotFadeRate, dotFadeRate, dotFadeRate);
 }
 
 /**
@@ -873,9 +936,19 @@ void loop()
 
     // animate dot
 
-    animateDot();
+    if(_DO_FADE)
+    {
+      fadeDot();
+      displayDot(true, dotFadeContainer);
+    }
+    else
+    {
+      animateDot();
+      displayDot(dotVisible, clockColor);
+    }
+
     tempDisplaySwitch();
-    displayDot(dotVisible, clockColor);
+    
 
 
     if(showForecast)
@@ -918,5 +991,10 @@ void loop()
     fetchTime();
     fetchLocation();
     fetchWeather();
+
+    // measure and send temperature no matter if we have data from net
+    // because this might be important for other applications
+    ReadDSTemp(); 
+    sendTemperature();
   }
 }

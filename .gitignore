@@ -2,3 +2,5 @@ app/.pioenvs
 app/.piolibdeps
 app/src/env_variables.h
 app/.pio
+.vscode
+app/.vscode
