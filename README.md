@@ -118,7 +118,7 @@ curl -X POST http://<clock-ip>/weather \
 The owner's setup (https://github.com/bboldi/iot.refactor, `wall_clock.yaml`) uses a webhook with `local_only: true` and the POST method only:
 
 - **double click:** shows `Tmrw` / `Wthr` and tomorrow's forecast as a Weather notice for 10 s.
-- **long press:** shows the boiler flow and return temperatures (`50*` / `45*`) for 10 s.
+- **long press:** shows the water temperature in the boiler on the top row and the radiator circuit on the bottom row (`69*` / `50*`) for 10 s.
 - **After either view,** HA sends the active alert Notice again.
 
 ## Transitions
