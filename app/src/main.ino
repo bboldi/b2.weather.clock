@@ -99,6 +99,9 @@ struct WeatherNotice
   unsigned long start = 0;
   uint32_t duration = 0;
   String icon;
+  bool custom = false; // element colors instead of an icon code
+  CRGB cloud, sun, rain, snow, lightning;
+  clocklogic::NoticeStyle style = clocklogic::STYLE_SIMPLE;
 } weatherNotice;
 
 uint32_t sensorRecoveries = 0;
@@ -1097,7 +1100,20 @@ void loop()
   {
     weatherNotice.active = false;
   }
-  setForecast(weatherNotice.active ? weatherNotice.icon : (weatherOk ? forecast : ""));
+  if (weatherNotice.active && weatherNotice.custom)
+  {
+    displayForecast(weatherNotice.cloud, weatherNotice.cloud, weatherNotice.sun, weatherNotice.rain, weatherNotice.snow,
+                    weatherNotice.lightning);
+  }
+  else
+  {
+    setForecast(weatherNotice.active ? weatherNotice.icon : (weatherOk ? forecast : ""));
+  }
+  if (weatherNotice.active)
+  {
+    for (int i = 58; i < 64; i++)
+      leds[i].nscale8(clocklogic::styleLevel(weatherNotice.style, millis() - weatherNotice.start));
+  }
 
   // notice rows go over the normal display
   if (notice.active)
@@ -1448,8 +1464,9 @@ void sendButtonEvent(const char *event)
 }
 
 /**
- * POST /weather {"icon":"10d","delay":30}: show a forecast icon (OpenWeather icon code, "" = off) for a while,
- * delay works like for the notice (missing 60 s, 0 clears, -1 until the button)
+ * POST /weather {"cloud":[r,g,b],"sun":[..],"rain":[..],"snow":[..],"lightning":[..],"style":"slow_blink","delay":30}
+ * shows the forecast icon elements in these colors (a missing one is off) for a while, or {"icon":"10d"} an
+ * OpenWeather icon code; delay works like for the notice (missing 60 s, 0 clears, -1 until the button)
  */
 void handleWeatherNotice()
 {
@@ -1466,13 +1483,20 @@ void handleWeatherNotice()
     return;
   }
 
-  uint32_t duration = clocklogic::noticeDurationMs(doc["delay"].is<long>(), doc["delay"] | 0L);
-  if (duration > 0 && !doc["icon"].is<const char *>())
+  WeatherNotice next;
+  next.cloud = next.sun = next.rain = next.snow = next.lightning = CRGB::Black;
+  if (!readColor(doc["cloud"], next.cloud) || !readColor(doc["sun"], next.sun) || !readColor(doc["rain"], next.rain) ||
+      !readColor(doc["snow"], next.snow) || !readColor(doc["lightning"], next.lightning))
   {
-    server.send(400, "application/json", "{\"error\":\"icon is required\"}");
+    server.send(400, "application/json", "{\"error\":\"color must be [r,g,b], 0-255\"}");
     return;
   }
+  next.custom = !doc["cloud"].isNull() || !doc["sun"].isNull() || !doc["rain"].isNull() || !doc["snow"].isNull() ||
+                !doc["lightning"].isNull() || !doc["icon"].is<const char *>();
+  next.style = clocklogic::parseStyle(doc["style"] | "simple");
 
+  uint32_t duration = clocklogic::noticeDurationMs(doc["delay"].is<long>(), doc["delay"] | 0L);
+  weatherNotice = next;
   weatherNotice.icon = doc["icon"] | "";
   weatherNotice.duration = duration;
   weatherNotice.start = millis();

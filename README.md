@@ -94,14 +94,17 @@ curl http://<clock-ip>/debug                         # or ?token=<token> / Beare
 
 ## Weather notice
 
-Other systems can also replace the forecast icon for a while:
+Other systems can also replace the forecast icon for a while. Each element of the icon gets its own color, and an element that is left out stays off:
 
 ```
-curl -X POST http://<clock-ip>/weather -d '{"icon":"10d","delay":10}'
+curl -X POST http://<clock-ip>/weather \
+  -d '{"cloud":[120,120,255],"sun":[255,200,0],"rain":[0,0,255],"snow":[255,255,255],"lightning":[255,255,0],"style":"slow_blink","delay":10}'
 ```
 
-- **`icon`:** an OpenWeather icon code (`01d` … `50n`). `""` turns the icons off.
+- **Elements:** `cloud` (both cloud LEDs), `sun`, `rain`, `snow`, `lightning`. Each takes an `[r,g,b]` color with values 0-255.
+- **`style`:** works as for a notice (`simple`, `fade_in_out`, `slow_blink`, `fast_blink`).
 - **`delay`:** works as for a notice: 60 s by default, `0` clears, `-1` keeps the icon until the button is clicked.
+- **Icon code:** an OpenWeather icon code, `{"icon":"10d"}`, also works and uses the clock's own colors. When colors are given, they win.
 - **Independence:** the Weather notice is separate from the text notice. A click clears both.
 
 ## Button
