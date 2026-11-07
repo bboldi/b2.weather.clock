@@ -4,3 +4,4 @@ app/src/env_variables.h
 app/.pio
 .vscode
 app/.vscode
+app/.ota_password

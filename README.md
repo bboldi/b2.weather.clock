@@ -109,3 +109,13 @@ When several digits change at once, they start one after the other, from right t
 - `_TRANSITION_ON_START_`: the change from the dashes to the first time shown.
 - `_TRANSITION_ON_NOTICE_`: a notice appears or ends.
 - `_TRANSITION_ON_TEMP_`: the inside/outside switch, or a temperature change.
+
+## OTA update
+
+After the first USB upload, the firmware can be updated over Wi-Fi. Set a password in `_OTA_PASSWORD_` in `env_variables.h`, because an empty password turns OTA off. Then set `upload_port` in the `d1_mini_ota` env of `platformio.ini` to the clock's IP and upload:
+
+```
+cd app && OTA_PASSWORD=<the same password> pio run -e d1_mini_ota -t upload
+```
+
+During the upload, the display shows `OtA` and the progress in percent, then `donE`, or `Err` if the upload fails. A wrong password is rejected.

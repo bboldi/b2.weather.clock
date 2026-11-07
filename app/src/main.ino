@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
+#include <ArduinoOTA.h>
 #include <time.h>
 #include <coredecls.h>
 #include <WiFiManager.h>
@@ -746,6 +747,8 @@ void setup()
 #endif
   server.begin();
 
+  setupOta();
+
   displayMessage(1, messageColor);
   updateTimeServer();
 
@@ -1080,6 +1083,7 @@ void loop()
   FastLED.show();
 
   server.handleClient();
+  ArduinoOTA.handle();
 
   logEvents();
 
@@ -1309,4 +1313,56 @@ void applyNoticeStyles()
       for (int i = 0; i < 7; i++)
         leds[DIGIT_START[d] + i].nscale8(clocklogic::styleLevel(notice.bottomStyle, t));
   }
+}
+
+/**
+ * Show two texts on the rows right away, used while the loop does not run (OTA)
+ */
+void showRows(const char *top, const char *bottom)
+{
+  FastLED.clear();
+  clocklogic::RowLayout t = clocklogic::layoutRow(top, true);
+  clocklogic::RowLayout b = clocklogic::layoutRow(bottom, false);
+  for (byte i = 0; i < 4; i++)
+  {
+    setGlyph(i, t.segments[i], messageColor);
+    setGlyph(4 + i, b.segments[i], messageColor);
+  }
+  FastLED.show();
+}
+
+/**
+ * Firmware update over Wi-Fi, only with a password
+ */
+void setupOta()
+{
+  if (!IS_SET(_OTA_PASSWORD_))
+  {
+    return;
+  }
+
+  ArduinoOTA.setHostname("b2-weather-clock");
+  ArduinoOTA.setPassword(_OTA_PASSWORD_);
+  ArduinoOTA.onStart([]() {
+    logf("OTA update started");
+    showRows("OtA", "0");
+  });
+  ArduinoOTA.onProgress([](unsigned int done, unsigned int total) {
+    static int lastPercent = -1;
+    int percent = total ? done * 100 / total : 0;
+    if (percent != lastPercent)
+    {
+      lastPercent = percent;
+      showRows("OtA", String(percent).c_str());
+    }
+  });
+  ArduinoOTA.onEnd([]() {
+    logf("OTA update done, restarting");
+    showRows("OtA", "donE");
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    logf("OTA error %d", error);
+    showRows("OtA", "Err");
+  });
+  ArduinoOTA.begin();
 }

@@ -47,3 +47,6 @@
 #define _TRANSITION_ON_START_ true  // from the dashes to the first time shown
 #define _TRANSITION_ON_NOTICE_ true // a notice appears or ends
 #define _TRANSITION_ON_TEMP_ true   // inside / outside switch, temperature change
+
+// OTA update password, empty turns OTA off. Upload: OTA_PASSWORD=... pio run -e d1_mini_ota -t upload
+#define _OTA_PASSWORD_ ""
