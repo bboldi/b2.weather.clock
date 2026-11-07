@@ -130,6 +130,58 @@ struct Debouncer
   }
 };
 
+/**
+ * Click, double click and long press from the debounced button state
+ */
+enum Gesture : uint8_t
+{
+  G_NONE, G_CLICK, G_DOUBLE_CLICK, G_LONG_PRESS
+};
+
+struct Gestures
+{
+  uint32_t longMs, doubleMs;
+  bool down = false, longFired = false;
+  uint8_t clicks = 0;
+  uint32_t pressAt = 0, releaseAt = 0;
+
+  Gestures(uint32_t longPressMs, uint32_t doubleClickMs) : longMs(longPressMs), doubleMs(doubleClickMs) {}
+
+  Gesture update(bool isDown, uint32_t now)
+  {
+    if (isDown && !down)
+    {
+      down = true;
+      pressAt = now;
+      longFired = false;
+    }
+    else if (!isDown && down)
+    {
+      down = false;
+      if (!longFired && ++clicks >= 2)
+      {
+        clicks = 0;
+        return G_DOUBLE_CLICK;
+      }
+      releaseAt = now;
+    }
+
+    if (down && !longFired && elapsed(now, pressAt, longMs))
+    {
+      longFired = true;
+      clicks = 0;
+      return G_LONG_PRESS;
+    }
+    // a single click is only sure when no second one came in time
+    if (!down && clicks == 1 && elapsed(now, releaseAt, doubleMs))
+    {
+      clicks = 0;
+      return G_CLICK;
+    }
+    return G_NONE;
+  }
+};
+
 // ---- Notice: text sent from outside, shown on a row for a while ----
 
 // segment bits: a=top, b=upper right, c=lower right, d=bottom, e=lower left, f=upper left, g=middle

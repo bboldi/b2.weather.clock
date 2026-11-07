@@ -50,3 +50,6 @@
 
 // OTA update password, empty turns OTA off. Upload: OTA_PASSWORD=... pio run -e d1_mini_ota -t upload
 #define _OTA_PASSWORD_ ""
+
+// button gestures (click, double_click, long_press) are POSTed here as {"event":"...","device":"b2-weather-clock"}, empty = off
+#define _BUTTON_EVENT_URL_ ""

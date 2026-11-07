@@ -48,6 +48,14 @@ _Avoid_: message, overlay, error display
 One of the two four-character lines of the display. The top row normally shows the time, the bottom row the temperature.
 _Avoid_: line, half
 
+**Weather notice**:
+A forecast icon that another system sends to the clock. It replaces the real forecast icon for a set time, in the same way a Notice replaces a Row.
+_Avoid_: icon override
+
+**Button gesture**:
+A click, a double click or a long press on the clock's button. The clock reports every gesture to the owner's home automation. A click also switches between the inside and outside temperature, or dismisses the current Notice and Weather notice.
+_Avoid_: button event, tap
+
 **Transition**:
 The short animation a digit plays when what it shows changes, for example when a minute passes or a Notice appears or ends. The owner chooses the style, or lets the clock pick one at random.
 _Avoid_: effect, change animation

@@ -86,6 +86,22 @@ CRGB leds[NUM_LEDS];
 WiFiManager wifiManager;
 
 clocklogic::Debouncer button(BUTTON_DEBOUNCE);
+clocklogic::Gestures gestures(1000, 400); // long press 1 s, double click within 400 ms
+
+#ifndef _BUTTON_EVENT_URL_
+#define _BUTTON_EVENT_URL_ ""
+#endif
+
+// weather notice: forecast icon sent from outside, shown instead of the real one for a while
+struct WeatherNotice
+{
+  bool active = false;
+  unsigned long start = 0;
+  uint32_t duration = 0;
+  String icon;
+} weatherNotice;
+
+uint32_t sensorRecoveries = 0;
 
 // animation
 
@@ -332,8 +348,8 @@ void handleDebug()
            "time: %s %02ld:%02ld:%02ld, last sync %lds ago (%s)\n"
            "utc offset: %s %ld, %lds old\n"
            "weather: %s, last ok %lds ago, icon %s temp %d\n"
-           "inside: %s %.2f C\n"
-           "notice: %s\n"
+           "inside: %s %.2f C, recovered reads %lu\n"
+           "notice: %s, weather notice: %s\n"
            "\n--- log ---\n",
            __DATE__, __TIME__, millis() / 1000, ESP.getResetReason().c_str(),
            ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(),
@@ -344,8 +360,8 @@ void handleDebug()
            hasServerOffset ? (long)((millis() - serverOffsetAt) / 1000) : -1L,
            hasWeather ? "yes" : "no", hasWeather ? (long)((millis() - weatherUpdated) / 1000) : -1L,
            forecast.c_str(), temperature,
-           insideOk ? "ok" : "NO SENSOR", insideTempC,
-           notice.active ? "active" : "none");
+           insideOk ? "ok" : "NO SENSOR", insideTempC, (unsigned long)sensorRecoveries,
+           notice.active ? "active" : "none", weatherNotice.active ? weatherNotice.icon.c_str() : "none");
 
   const char *a, *b;
   size_t aLen, bLen;
@@ -651,8 +667,31 @@ void displayMessage(int index, CRGB color)
 void readInsideTemp()
 {
   // by index, so a sensor plugged in after boot is found too
+  bool wasOk = insideOk;
   insideTempC = DS18B20.getTempCByIndex(0);
   insideOk = insideTempC != DEVICE_DISCONNECTED_C;
+
+  if (!insideOk)
+  {
+    // restart the bus and read once blocking (~750 ms), recovers a sensor that dropped off
+    DS18B20.begin();
+    DS18B20.setWaitForConversion(true);
+    DS18B20.requestTemperatures();
+    DS18B20.setWaitForConversion(false);
+    insideTempC = DS18B20.getTempCByIndex(0);
+    insideOk = insideTempC != DEVICE_DISCONNECTED_C;
+    if (insideOk)
+    {
+      sensorRecoveries++;
+      logf("inside sensor read failed, recovered by a blocking read (%lu so far)", (unsigned long)sensorRecoveries);
+    }
+  }
+
+  if (insideOk != wasOk)
+  {
+    logf("inside sensor %s (%.2f C, devices %d, parasite %d)", insideOk ? "ok" : "LOST", insideTempC,
+         DS18B20.getDeviceCount(), DS18B20.isParasitePowerMode());
+  }
   DS18B20.requestTemperatures();
 }
 
@@ -742,6 +781,7 @@ void setup()
   // notice endpoint for Home Assistant
   server.collectHeaders("Authorization");
   server.on("/notice", HTTP_POST, handleNotice);
+  server.on("/weather", HTTP_POST, handleWeatherNotice);
 #if _DEBUG_
   server.on("/debug", HTTP_GET, handleDebug);
 #endif
@@ -1052,7 +1092,12 @@ void loop()
   }
 
   // set forecast, empty icon turns it off
-  setForecast(weatherOk ? forecast : "");
+  if (weatherNotice.active && weatherNotice.duration != clocklogic::NOTICE_FOREVER &&
+      elapsed(millis(), weatherNotice.start, weatherNotice.duration))
+  {
+    weatherNotice.active = false;
+  }
+  setForecast(weatherNotice.active ? weatherNotice.icon : (weatherOk ? forecast : ""));
 
   // notice rows go over the normal display
   if (notice.active)
@@ -1061,19 +1106,35 @@ void loop()
   }
 
   // button dismisses the notice, otherwise switches inside / outside temperature
-  if (button.pressed(digitalRead(BUTTON_PIN) == 1, millis()))
+  button.pressed(digitalRead(BUTTON_PIN) == 1, millis());
+  switch (gestures.update(button.state, millis()))
   {
-    if (notice.active)
+  case clocklogic::G_CLICK:
+    // dismisses the notices, otherwise switches inside / outside temperature
+    if (notice.active || weatherNotice.active)
     {
       notice.active = false;
-      logf("button: notice dismissed");
+      weatherNotice.active = false;
+      logf("button: click, notice dismissed");
     }
     else
     {
-      logf("button: temperature switch");
+      logf("button: click, temperature switch");
       showForecast = !showForecast;
       changeTempDisplay = millis();
     }
+    sendButtonEvent("click");
+    break;
+  case clocklogic::G_DOUBLE_CLICK:
+    logf("button: double click");
+    sendButtonEvent("double_click");
+    break;
+  case clocklogic::G_LONG_PRESS:
+    logf("button: long press");
+    sendButtonEvent("long_press");
+    break;
+  default:
+    break;
   }
 
   animateDigits();
@@ -1365,4 +1426,58 @@ void setupOta()
     showRows("OtA", "Err");
   });
   ArduinoOTA.begin();
+}
+
+/**
+ * POST the button gesture to the configured url (e.g. a Home Assistant webhook)
+ */
+void sendButtonEvent(const char *event)
+{
+  if (!IS_SET(_BUTTON_EVENT_URL_) || WiFi.status() != WL_CONNECTED)
+  {
+    return;
+  }
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT);
+  http.begin(client, _BUTTON_EVENT_URL_);
+  http.addHeader("Content-Type", "application/json");
+  int responseCode = http.POST(String("{\"event\":\"") + event + "\",\"device\":\"b2-weather-clock\"}");
+  http.end();
+  logf("button event %s -> %d", event, responseCode);
+}
+
+/**
+ * POST /weather {"icon":"10d","delay":30}: show a forecast icon (OpenWeather icon code, "" = off) for a while,
+ * delay works like for the notice (missing 60 s, 0 clears, -1 until the button)
+ */
+void handleWeatherNotice()
+{
+  if (!authorized())
+  {
+    server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) || !doc.is<JsonObject>())
+  {
+    server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+    return;
+  }
+
+  uint32_t duration = clocklogic::noticeDurationMs(doc["delay"].is<long>(), doc["delay"] | 0L);
+  if (duration > 0 && !doc["icon"].is<const char *>())
+  {
+    server.send(400, "application/json", "{\"error\":\"icon is required\"}");
+    return;
+  }
+
+  weatherNotice.icon = doc["icon"] | "";
+  weatherNotice.duration = duration;
+  weatherNotice.start = millis();
+  weatherNotice.active = duration > 0;
+  logf("weather notice %s icon '%s' delay %ld", weatherNotice.active ? "shown" : "cleared", weatherNotice.icon.c_str(),
+       duration == clocklogic::NOTICE_FOREVER ? -1L : (long)duration / 1000);
+  server.send(200, "application/json", weatherNotice.active ? "{\"status\":\"shown\"}" : "{\"status\":\"cleared\"}");
 }

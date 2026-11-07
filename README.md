@@ -92,6 +92,24 @@ curl http://<clock-ip>/debug                         # or ?token=<token> / Beare
 - **After a restart:** the last lines are kept in RTC memory and are shown as `--- previous boot ---`. They survive a reset or a crash, but not a power loss.
 - **Serial:** the serial output (115200) has everything, also with `_DEBUG_ false`.
 
+## Weather notice
+
+Other systems can also replace the forecast icon for a while:
+
+```
+curl -X POST http://<clock-ip>/weather -d '{"icon":"10d","delay":10}'
+```
+
+- **`icon`:** an OpenWeather icon code (`01d` … `50n`). `""` turns the icons off.
+- **`delay`:** works as for a notice: 60 s by default, `0` clears, `-1` keeps the icon until the button is clicked.
+- **Independence:** the Weather notice is separate from the text notice. A click clears both.
+
+## Button
+
+- **Click:** switches between the inside and outside temperature, or dismisses the active notices.
+- **Gestures:** every click, double click (two clicks within 400 ms) and long press (1 s) is POSTed to `_BUTTON_EVENT_URL_` as `{"event":"click|double_click|long_press","device":"b2-weather-clock"}`, for example to a Home Assistant webhook. Leave the URL empty to send nothing.
+- **Click delay:** a click acts 400 ms after the release, because the clock waits to see whether a second click comes.
+
 ## Transitions
 
 When the segments of a digit change, the digit plays a short animation. The style is set with `_TRANSITION_STYLE_`:

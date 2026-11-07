@@ -364,9 +364,42 @@ void test_transition_not_started_and_none()
   TEST_ASSERT_EQUAL(TR_SPIRAL, parseTransition("spiral"));
 }
 
+static Gesture feed(Gestures &g, bool down, uint32_t from, uint32_t to)
+{
+  Gesture result = G_NONE;
+  for (uint32_t t = from; t <= to; t += 10)
+  {
+    Gesture e = g.update(down, t);
+    if (e != G_NONE)
+      result = e;
+  }
+  return result;
+}
+
+void test_gestures()
+{
+  Gestures g(1000, 400);
+  // click: press, release, then nothing for the double click window
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, true, 0, 100));
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, false, 110, 400));
+  TEST_ASSERT_EQUAL(G_CLICK, feed(g, false, 410, 600));
+
+  // double click
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, true, 1000, 1100));
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, false, 1110, 1200));
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, true, 1210, 1300));
+  TEST_ASSERT_EQUAL(G_DOUBLE_CLICK, feed(g, false, 1310, 1320));
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, false, 1330, 2000)); // no extra click after it
+
+  // long press fires while held, the release is not a click
+  TEST_ASSERT_EQUAL(G_LONG_PRESS, feed(g, true, 3000, 4100));
+  TEST_ASSERT_EQUAL(G_NONE, feed(g, false, 4110, 5000));
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
+  RUN_TEST(test_gestures);
   RUN_TEST(test_slide_up_two_to_three);
   RUN_TEST(test_spiral_order_then_fade_in);
   RUN_TEST(test_fade_and_glitch);
