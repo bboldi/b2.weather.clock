@@ -48,6 +48,10 @@ _Avoid_: message, overlay, error display
 One of the two four-character lines of the display. The top row normally shows the time, the bottom row the temperature.
 _Avoid_: line, half
 
+**Debug log**:
+The recent events the clock remembers, so that the owner can see later what happened. It is only kept when the owner turns debugging on. The last few events survive a restart, but not a power loss.
+_Avoid_: serial log, history
+
 ### Freshness
 
 **Stale time**:

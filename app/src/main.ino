@@ -136,6 +136,33 @@ struct Notice
 
 ESP8266WebServer server(80);
 
+// debug log: recent events in RAM, the tail also in RTC memory so it survives a restart
+
+#ifndef _DEBUG_
+#define _DEBUG_ false
+#endif
+#define LOG_SIZE 6144
+#define LOG_REPEAT_WINDOW 600000 // same line at most once per 10 min in the debug log
+#define STATUS_LOG_INTERVAL 600000
+#define RTC_LOG_MAGIC 0xB2C10C01
+#define RTC_LOG_OFFSET 32 // in 4 byte blocks, the first 128 bytes are used by eboot for OTA commands
+
+#if _DEBUG_
+clocklogic::LogRing<LOG_SIZE> debugLog;
+clocklogic::RepeatFilter<12> logRepeats;
+struct RtcLog
+{
+  uint32_t magic;
+  uint32_t length;
+  char text[368];
+} rtcLog;
+#endif
+
+unsigned long lastStatusLog = 0;
+int lastWiFiStatus = -1;
+volatile bool timeSyncEvent = false;
+const char *timeSource = "NTP";
+
 // verified on the hardware: 15 is the upper dot
 #define DOT_UPPER_LED 15
 #define DOT_LOWER_LED 14
@@ -193,6 +220,148 @@ void turnOnLeds(String pins, CRGB color, boolean doClear = true )
 }
 
 /**
+ * Log a line to serial, and with a timestamp to the debug log (secrets hidden, repeats dropped)
+ */
+void logf(const char *format, ...)
+{
+  char line[200];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  Serial.println(line);
+
+#if _DEBUG_
+  clocklogic::redactParam(line, sizeof(line), "appid=");
+  if (!logRepeats.allow(line, millis(), LOG_REPEAT_WINDOW))
+  {
+    return;
+  }
+  char stamped[220];
+  char stamp[16];
+  clocklogic::formatStamp(stamp, sizeof(stamp), timeSynced, timeSynced ? localSecondsOfDay() : 0, millis());
+  snprintf(stamped, sizeof(stamped), "%s %s", stamp, line);
+  debugLog.append(stamped);
+
+  rtcLog.magic = RTC_LOG_MAGIC;
+  rtcLog.length = debugLog.tail(rtcLog.text, sizeof(rtcLog.text));
+  ESP.rtcUserMemoryWrite(RTC_LOG_OFFSET, (uint32_t *)&rtcLog, sizeof(rtcLog));
+#endif
+}
+
+/**
+ * Put the debug log tail of the previous boot (if it survived in RTC memory) in front of this one
+ */
+void restorePreviousLog()
+{
+#if _DEBUG_
+  if (ESP.rtcUserMemoryRead(RTC_LOG_OFFSET, (uint32_t *)&rtcLog, sizeof(rtcLog)) && rtcLog.magic == RTC_LOG_MAGIC &&
+      rtcLog.length < sizeof(rtcLog.text))
+  {
+    rtcLog.text[rtcLog.length] = 0;
+    debugLog.append("--- previous boot ---");
+    char *line = strtok(rtcLog.text, "\n");
+    while (line)
+    {
+      debugLog.append(line);
+      line = strtok(nullptr, "\n");
+    }
+    debugLog.append("--- this boot ---");
+  }
+#endif
+}
+
+/**
+ * Notice and debug endpoint check, open if no token is set
+ */
+bool authorized()
+{
+  if (!IS_SET(_NOTICE_TOKEN_))
+  {
+    return true;
+  }
+  return server.header("Authorization") == String("Bearer ") + _NOTICE_TOKEN_ || server.arg("token") == _NOTICE_TOKEN_;
+}
+
+#if _DEBUG_
+/**
+ * GET /debug: status, then the debug log oldest first
+ */
+void handleDebug()
+{
+  if (!authorized())
+  {
+    server.send(401, "text/plain", "unauthorized\n");
+    return;
+  }
+
+  long secs = localSecondsOfDay();
+  char status[600];
+  snprintf(status, sizeof(status),
+           "firmware: %s %s\n"
+           "uptime: %lus\n"
+           "reset reason: %s\n"
+           "free heap: %u (largest block %u)\n"
+           "wifi: status %d rssi %d ip %s\n"
+           "time: %s %02ld:%02ld:%02ld, last sync %lds ago (%s)\n"
+           "utc offset: %s %ld, %lds old\n"
+           "weather: %s, last ok %lds ago, icon %s temp %d\n"
+           "inside: %s %.2f C\n"
+           "notice: %s\n"
+           "\n--- log ---\n",
+           __DATE__, __TIME__, millis() / 1000, ESP.getResetReason().c_str(),
+           ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(),
+           WiFi.status(), WiFi.RSSI(), WiFi.localIP().toString().c_str(),
+           timeSynced ? "synced" : "NOT synced", secs / 3600, (secs / 60) % 60, secs % 60,
+           timeSynced ? (long)((millis() - lastTimeSync) / 1000) : -1L, timeSource,
+           hasServerOffset ? "server" : "fallback TZ", serverOffset,
+           hasServerOffset ? (long)((millis() - serverOffsetAt) / 1000) : -1L,
+           hasWeather ? "yes" : "no", hasWeather ? (long)((millis() - weatherUpdated) / 1000) : -1L,
+           forecast.c_str(), temperature,
+           insideOk ? "ok" : "NO SENSOR", insideTempC,
+           notice.active ? "active" : "none");
+
+  const char *a, *b;
+  size_t aLen, bLen;
+  debugLog.pieces(a, aLen, b, bLen);
+
+  server.setContentLength(strlen(status) + aLen + bLen);
+  server.send(200, "text/plain", status);
+  server.sendContent(a, aLen);
+  server.sendContent(b, bLen);
+}
+#endif
+
+/**
+ * Events worth a debug log line, checked every loop
+ */
+void logEvents()
+{
+  if (timeSyncEvent)
+  {
+    timeSyncEvent = false;
+    logf("time synced from %s", timeSource);
+    timeSource = "NTP";
+  }
+
+  int status = WiFi.status();
+  if (status != lastWiFiStatus)
+  {
+    if (status == WL_CONNECTED)
+      logf("WiFi connected, rssi %d ip %s", WiFi.RSSI(), WiFi.localIP().toString().c_str());
+    else if (lastWiFiStatus != -1)
+      logf("WiFi lost (status %d)", status);
+    lastWiFiStatus = status;
+  }
+
+  if (elapsed(millis(), lastStatusLog, STATUS_LOG_INTERVAL))
+  {
+    lastStatusLog = millis();
+    logf("status heap %u rssi %d uptime %lus", ESP.getFreeHeap(), WiFi.RSSI(), millis() / 1000);
+  }
+}
+
+/**
  * Code to connect to wifi, only at startup. Later the ESP reconnects by itself.
  */
 void connectToWiFi()
@@ -211,7 +380,7 @@ void connectToWiFi()
   WiFi.mode(WIFI_STA);
   WiFi.begin();
   WiFi.waitForConnectResult(15000);
-  Serial.printf("WiFi '%s' status %d ip %s\n", WiFi.SSID().c_str(), WiFi.status(), WiFi.localIP().toString().c_str());
+  logf("WiFi '%s' status %d ip %s", WiFi.SSID().c_str(), WiFi.status(), WiFi.localIP().toString().c_str());
 }
 
 /**
@@ -219,7 +388,7 @@ void connectToWiFi()
  */
 void configModeCallback(WiFiManager *_wifiMan)
 {
-  Serial.println("AP config mode");
+  logf("AP config mode");
   FastLED.clear();
   displayMessage(5, messageColor);
 }
@@ -231,7 +400,7 @@ bool getJson(const String &url, JsonDocument &doc)
 {
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.printf("No wifi (status %d), skip %s\n", WiFi.status(), url.c_str());
+    Serial.printf("No wifi (status %d), skip %s\n", WiFi.status(), url.c_str()); // WiFi lost is logged once
     return false;
   }
 
@@ -240,13 +409,13 @@ bool getJson(const String &url, JsonDocument &doc)
   http.setTimeout(HTTP_TIMEOUT);
   http.begin(client, url);
   int responseCode = http.GET();
-  Serial.printf("GET %s -> %d\n", url.c_str(), responseCode);
+  logf("GET %s -> %d", url.c_str(), responseCode);
 
   bool ok = false;
   if (responseCode == HTTP_CODE_OK)
   {
     DeserializationError error = deserializeJson(doc, http.getString());
-    if (error) { Serial.println(error.c_str()); }
+    if (error) { logf("json error %s: %s", error.c_str(), url.c_str()); }
     ok = !error;
   }
   http.end();
@@ -262,7 +431,7 @@ bool fetchTimeServer()
   long offset;
   if (!getJson(_TIME_SERVER_URL_, doc) || !clocklogic::parseUtcOffset(doc["utc_offset"] | "", offset))
   {
-    Serial.println("Error fetching time server");
+    logf("Error fetching time server");
     return false;
   }
 
@@ -273,12 +442,13 @@ bool fetchTimeServer()
   long unixtime = doc["unixtime"] | 0L;
   if (unixtime > 0 && (!timeSynced || elapsed(millis(), lastTimeSync, NTP_MISSED)))
   {
-    Serial.println("Set time from time server");
+    logf("Set time from time server");
+    timeSource = "time server";
     timeval tv = {unixtime, 0};
     settimeofday(&tv, nullptr);
   }
 
-  Serial.printf("utc offset: %ld\n", serverOffset);
+  logf("utc offset: %ld", serverOffset);
   return true;
 }
 
@@ -316,14 +486,14 @@ bool fetchLocation()
   JsonDocument doc;
   if (!getJson(LOCATION_URL, doc) || doc["status"] != "success")
   {
-    Serial.println("Error fetching location, using the default");
+    logf("Error fetching location, using the default");
     return false;
   }
 
   lat = doc["lat"];
   lng = doc["lon"];
 
-  Serial.printf("lat: %f lng: %f\n", lat, lng);
+  logf("lat: %f lng: %f", lat, lng);
   return true;
 }
 
@@ -347,7 +517,7 @@ bool fetchWeather()
   // get forecast for the next 3 hour
   if (!getJson(OPENWEATHER_URL "forecast?cnt=2" + params, doc))
   {
-    Serial.println("Error fetching weather forecast");
+    logf("Error fetching weather forecast");
     return false;
   }
   String icon = doc["list"][0]["weather"][0]["icon"] | "";
@@ -355,14 +525,14 @@ bool fetchWeather()
   // get current temperature
   if (!getJson(OPENWEATHER_URL "weather?lang=en" + params, doc) || icon == "" || !doc["main"]["temp"].is<float>())
   {
-    Serial.println("Error fetching weather current");
+    logf("Error fetching weather current");
     return false;
   }
 
   forecast = icon;
   temperature = (int)doc["main"]["temp"].as<float>();
 
-  Serial.printf("forecast: %s temp: %d\n", forecast.c_str(), temperature);
+  logf("forecast: %s temp: %d", forecast.c_str(), temperature);
   return true;
 }
 
@@ -481,9 +651,11 @@ void sendTemperature()
       http.setAuthorization(_SEND_TEMP_USER, _SEND_TEMP_PASS);
     }
     int responseCode = http.GET();
-    Serial.println("send temperature");
-    Serial.println(responseCode);
-    Serial.println(http.getString());
+    // success every 30 s is noise, only failures go to the debug log
+    if (responseCode == HTTP_CODE_OK)
+      Serial.printf("send temperature -> %d\n", responseCode);
+    else
+      logf("send temperature failed -> %d", responseCode);
     http.end();
   }
 }
@@ -499,8 +671,7 @@ void DS18B20Setup()
   DS18B20.setWaitForConversion(false);
   readInsideTemp();
 
-  Serial.println("TEMP_C:");
-  Serial.println(insideTempC);
+  logf("inside temp %.2f C", insideTempC);
 }
 
 /**
@@ -510,6 +681,8 @@ void setup()
 {
   // setup serial
   Serial.begin(115200);
+  restorePreviousLog();
+  logf("boot, reset reason: %s", ESP.getResetReason().c_str());
 
   // pin definitions
   pinMode(BUTTON_PIN, INPUT);
@@ -536,12 +709,16 @@ void setup()
   settimeofday_cb([]() {
     lastTimeSync = millis();
     timeSynced = true;
+    timeSyncEvent = true; // logged from loop, not from the SNTP callback
   });
   configTime(_FALLBACK_TZ_, NTP_SERVER_1, NTP_SERVER_2);
 
   // notice endpoint for Home Assistant
   server.collectHeaders("Authorization");
   server.on("/notice", HTTP_POST, handleNotice);
+#if _DEBUG_
+  server.on("/debug", HTTP_GET, handleDebug);
+#endif
   server.begin();
 
   displayMessage(1, messageColor);
@@ -861,9 +1038,11 @@ void loop()
     if (notice.active)
     {
       notice.active = false;
+      logf("button: notice dismissed");
     }
     else
     {
+      logf("button: temperature switch");
       showForecast = !showForecast;
       changeTempDisplay = millis();
     }
@@ -873,6 +1052,8 @@ void loop()
   FastLED.show();
 
   server.handleClient();
+
+  logEvents();
 
   // refresh data, sooner if the last attempt failed
   if (elapsed(millis(), weatherAttempt, weatherFetchOk ? UPDATE_WEATHER : RETRY_WEATHER))
@@ -955,7 +1136,7 @@ bool readColor(JsonVariant value, CRGB &color)
  */
 void handleNotice()
 {
-  if (IS_SET(_NOTICE_TOKEN_) && server.header("Authorization") != String("Bearer ") + _NOTICE_TOKEN_)
+  if (!authorized())
   {
     server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
     return;
@@ -990,6 +1171,7 @@ void handleNotice()
 
   // a newer notice replaces the current one, delay 0 clears it
   notice = next;
-  Serial.printf("notice %s for %lu ms\n", notice.active ? "shown" : "cleared", (unsigned long)notice.duration);
+  logf("notice %s top '%s' bottom '%s' delay %ld", notice.active ? "shown" : "cleared", (const char *)(doc["top"] | ""),
+       (const char *)(doc["bottom"] | ""), notice.duration == clocklogic::NOTICE_FOREVER ? -1L : (long)notice.duration / 1000);
   server.send(200, "application/json", notice.active ? "{\"status\":\"shown\"}" : "{\"status\":\"cleared\"}");
 }

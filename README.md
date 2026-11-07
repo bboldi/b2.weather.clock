@@ -67,3 +67,27 @@ curl -X POST http://<clock-ip>/notice \
 - **Styles:** `simple`, `fade_in_out`, `slow_blink` and `fast_blink`, set per row.
 - **Night mode:** `"night_dim": false` keeps full brightness during Night mode.
 - **Responses:** 200 on success, 400 for invalid JSON or color, 401 for a wrong token.
+
+## Debug log
+
+With `#define _DEBUG_ true` in `env_variables.h`, the clock keeps a Debug log of its recent events. The log costs about 7 KB RAM.
+
+```
+curl http://<clock-ip>/debug                         # or ?token=<token> / Bearer header if _NOTICE_TOKEN_ is set
+```
+
+- **Status:** the response starts with the current status: firmware build, uptime, reset reason, free heap, Wi-Fi RSSI, time sync, UTC offset, weather age, the inside sensor and the active notice.
+- **Log:** after the status comes the log, oldest line first. The lines have a local time stamp, or the uptime (`+12.3s`) before the first time sync.
+- **What is logged:**
+  - every HTTP fetch with its result
+  - time syncs
+  - Wi-Fi lost and back
+  - notices and button presses
+  - the reset reason at boot
+  - a status line every 10 minutes
+- **What is left out:**
+  - The API key is hidden as `appid=***`.
+  - The same line is kept at most once per 10 minutes, so retries do not flood the 6 KB buffer.
+  - Successful temperature uploads are left out.
+- **After a restart:** the last lines are kept in RTC memory and are shown as `--- previous boot ---`. They survive a reset or a crash, but not a power loss.
+- **Serial:** the serial output (115200) has everything, also with `_DEBUG_ false`.

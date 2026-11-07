@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -287,5 +288,148 @@ inline uint32_t noticeDurationMs(bool given, long seconds)
     return 0;
   return (uint32_t)(seconds > 3600 ? 3600 : seconds) * 1000;
 }
+
+// ---- Debug log ----
+
+/**
+ * Lines in a fixed size ring, the oldest are overwritten. Each line ends with '\n'.
+ */
+template <size_t N>
+struct LogRing
+{
+  char data[N];
+  size_t head = 0;      // next write position
+  bool wrapped = false; // data was overwritten at least once
+
+  void append(const char *line)
+  {
+    for (const char *p = line; *p; p++)
+      put(*p);
+    put('\n');
+  }
+
+  /**
+   * Content in order as up to 2 pieces; after wrapping the cut first line is skipped
+   */
+  void pieces(const char *&a, size_t &aLen, const char *&b, size_t &bLen) const
+  {
+    if (!wrapped)
+    {
+      a = data, aLen = head, b = data, bLen = 0;
+      return;
+    }
+    size_t start = head;
+    while (start < N && data[start] != '\n')
+      start++;
+    if (start < N)
+    {
+      a = data + start + 1, aLen = N - start - 1, b = data, bLen = head;
+      return;
+    }
+    // the cut line runs into the beginning
+    size_t i = 0;
+    while (i < head && data[i] != '\n')
+      i++;
+    a = data + (i < head ? i + 1 : head), aLen = i < head ? head - i - 1 : 0, b = data, bLen = 0;
+  }
+
+  /**
+   * Last whole lines that fit into max - 1 bytes, null terminated, returns the length
+   */
+  size_t tail(char *out, size_t max) const
+  {
+    const char *a, *b;
+    size_t aLen, bLen;
+    pieces(a, aLen, b, bLen);
+    size_t total = aLen + bLen;
+    size_t skip = total > max - 1 ? total - (max - 1) : 0;
+
+    size_t n = 0;
+    bool lineStart = skip == 0;
+    for (size_t i = skip; i < total; i++)
+    {
+      char c = i < aLen ? a[i] : b[i - aLen];
+      if (!lineStart)
+      {
+        lineStart = c == '\n';
+        continue;
+      }
+      out[n++] = c;
+    }
+    out[n] = 0;
+    return n;
+  }
+
+private:
+  void put(char c)
+  {
+    data[head++] = c;
+    if (head == N)
+      head = 0, wrapped = true;
+  }
+};
+
+/**
+ * Hide the value of key (e.g. "appid=") up to the next '&', in place
+ */
+inline void redactParam(char *text, size_t size, const char *key)
+{
+  char *p = strstr(text, key);
+  if (!p)
+    return;
+  char *value = p + strlen(key);
+  char *end = value;
+  while (*end && *end != '&' && *end != ' ')
+    end++;
+  if (end - value <= 3)
+    return;
+  memcpy(value, "***", 3);
+  memmove(value + 3, end, strlen(end) + 1);
+  (void)size;
+}
+
+/**
+ * Line prefix: local "HH:MM:SS" once the time is known, before that the uptime "+12.3s"
+ */
+inline void formatStamp(char *out, size_t size, bool timeKnown, long secondsOfDay, unsigned long uptimeMs)
+{
+  if (timeKnown)
+    snprintf(out, size, "%02ld:%02ld:%02ld", secondsOfDay / 3600, (secondsOfDay / 60) % 60, secondsOfDay % 60);
+  else
+    snprintf(out, size, "+%lu.%lus", uptimeMs / 1000, (uptimeMs / 100) % 10);
+}
+
+/**
+ * Lets the same text through once per window, so retries every minute don't flood the Debug log
+ */
+template <size_t SLOTS>
+struct RepeatFilter
+{
+  uint32_t hashes[SLOTS] = {};
+  uint32_t times[SLOTS] = {};
+  size_t next = 0;
+
+  bool allow(const char *text, uint32_t now, uint32_t window)
+  {
+    uint32_t h = 2166136261u; // FNV-1a
+    for (const char *p = text; *p; p++)
+      h = (h ^ (uint8_t)*p) * 16777619u;
+
+    for (size_t i = 0; i < SLOTS; i++)
+    {
+      if (hashes[i] == h && times[i] != 0)
+      {
+        if (!elapsed(now, times[i], window))
+          return false;
+        times[i] = now | 1;
+        return true;
+      }
+    }
+    hashes[next] = h;
+    times[next] = now | 1; // 0 means empty slot
+    next = (next + 1) % SLOTS;
+    return true;
+  }
+};
 
 } // namespace clocklogic

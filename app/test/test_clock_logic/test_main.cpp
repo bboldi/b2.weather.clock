@@ -1,5 +1,6 @@
 #include <unity.h>
 #include <clock_logic.h>
+#include <string>
 
 using namespace clocklogic;
 
@@ -206,9 +207,87 @@ void test_notice_duration()
   TEST_ASSERT_EQUAL_UINT32(0, noticeDurationMs(true, -5));
 }
 
+static std::string joined(const LogRing<16> &r)
+{
+  const char *a, *b;
+  size_t aLen, bLen;
+  r.pieces(a, aLen, b, bLen);
+  return std::string(a, aLen) + std::string(b, bLen);
+}
+
+void test_log_ring_keeps_lines_in_order()
+{
+  LogRing<16> r;
+  r.append("one");
+  r.append("two");
+  TEST_ASSERT_EQUAL_STRING("one\ntwo\n", joined(r).c_str());
+}
+
+void test_log_ring_drops_oldest_and_cut_line()
+{
+  LogRing<16> r;
+  r.append("aaaa");
+  r.append("bbbb");
+  r.append("cccc");
+  r.append("dddd"); // 20 bytes into 16, "aaaa" is cut
+  TEST_ASSERT_EQUAL_STRING("bbbb\ncccc\ndddd\n", joined(r).c_str());
+
+  r.append("eeeeeeeeeeeeeee"); // longer than the ring: nothing whole is left
+  TEST_ASSERT_EQUAL_STRING("", joined(r).c_str());
+}
+
+void test_log_ring_tail()
+{
+  LogRing<64> r;
+  r.append("first line");
+  r.append("second");
+  r.append("third");
+  char out[16];
+  r.tail(out, sizeof(out));
+  TEST_ASSERT_EQUAL_STRING("second\nthird\n", out);
+  r.tail(out, 4);
+  TEST_ASSERT_EQUAL_STRING("", out);
+}
+
+void test_redact_param()
+{
+  char url[] = "GET http://x/weather?lang=en&appid=0123456789abcdef&lat=1 -> 200";
+  redactParam(url, sizeof(url), "appid=");
+  TEST_ASSERT_EQUAL_STRING("GET http://x/weather?lang=en&appid=***&lat=1 -> 200", url);
+
+  char none[] = "no key here";
+  redactParam(none, sizeof(none), "appid=");
+  TEST_ASSERT_EQUAL_STRING("no key here", none);
+}
+
+void test_format_stamp()
+{
+  char s[16];
+  formatStamp(s, sizeof(s), true, 13 * 3600 + 42 * 60 + 7, 0);
+  TEST_ASSERT_EQUAL_STRING("13:42:07", s);
+  formatStamp(s, sizeof(s), false, 0, 12345);
+  TEST_ASSERT_EQUAL_STRING("+12.3s", s);
+}
+
+void test_repeat_filter()
+{
+  RepeatFilter<2> f;
+  TEST_ASSERT_TRUE(f.allow("err a", 1000, 600000));
+  TEST_ASSERT_FALSE(f.allow("err a", 61000, 600000)); // retry a minute later
+  TEST_ASSERT_TRUE(f.allow("err b", 61000, 600000));
+  TEST_ASSERT_TRUE(f.allow("err a", 602000, 600000)); // window passed
+  TEST_ASSERT_TRUE(f.allow("err c", 603000, 600000)); // evicts the oldest slot
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
+  RUN_TEST(test_repeat_filter);
+  RUN_TEST(test_log_ring_keeps_lines_in_order);
+  RUN_TEST(test_log_ring_drops_oldest_and_cut_line);
+  RUN_TEST(test_log_ring_tail);
+  RUN_TEST(test_redact_param);
+  RUN_TEST(test_format_stamp);
   RUN_TEST(test_glyphs);
   RUN_TEST(test_bottom_row_drops_unknown_and_keeps_four);
   RUN_TEST(test_bottom_row_right_aligned);

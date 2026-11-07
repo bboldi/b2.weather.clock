@@ -37,3 +37,6 @@
 
 // notice endpoint (POST /notice): if set, calls need the header "Authorization: Bearer <token>"
 #define _NOTICE_TOKEN_ ""
+
+// debug log in RAM and GET /debug (protected by _NOTICE_TOKEN_ if set), costs about 7 KB RAM
+#define _DEBUG_ false
