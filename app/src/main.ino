@@ -136,9 +136,9 @@ struct Notice
 
 ESP8266WebServer server(80);
 
-// ponytail: guessed from the wiring, verify with a "12'34" / "12.34" notice
-#define DOT_UPPER_LED 14
-#define DOT_LOWER_LED 15
+// verified on the hardware: 15 is the upper dot
+#define DOT_UPPER_LED 15
+#define DOT_LOWER_LED 14
 
 // digit definitions
 
