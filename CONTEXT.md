@@ -41,7 +41,7 @@ The configured hours when the clock shows everything at reduced brightness.
 _Avoid_: dimming, sleep mode
 
 **Notice**:
-A short text that another system, such as Home Assistant, sends to the clock. It replaces the top row, the bottom row or both for a set time, then the normal display comes back. A newer Notice replaces the current one.
+A short text that another system, such as Home Assistant, sends to the clock. It replaces the top row, the bottom row or both for a set time, or until it is dismissed (a Permanent notice), then the normal display comes back. A newer Notice replaces the current one.
 _Avoid_: message, overlay, error display
 
 **Row**:

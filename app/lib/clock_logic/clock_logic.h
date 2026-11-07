@@ -274,10 +274,15 @@ inline uint8_t styleLevel(NoticeStyle style, unsigned long now)
 /**
  * Notice duration in ms from the "delay" seconds: missing -> 60 s, capped at 1 hour, 0 means clear
  */
+// delay -1: the notice stays until the button, a newer notice or delay 0
+constexpr uint32_t NOTICE_FOREVER = UINT32_MAX;
+
 inline uint32_t noticeDurationMs(bool given, long seconds)
 {
   if (!given)
     return 60000;
+  if (seconds == -1)
+    return NOTICE_FOREVER;
   if (seconds <= 0)
     return 0;
   return (uint32_t)(seconds > 3600 ? 3600 : seconds) * 1000;

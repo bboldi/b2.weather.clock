@@ -202,6 +202,8 @@ void test_notice_duration()
   TEST_ASSERT_EQUAL_UINT32(0, noticeDurationMs(true, 0));
   TEST_ASSERT_EQUAL_UINT32(30000, noticeDurationMs(true, 30));
   TEST_ASSERT_EQUAL_UINT32(3600000, noticeDurationMs(true, 99999));
+  TEST_ASSERT_EQUAL_UINT32(NOTICE_FOREVER, noticeDurationMs(true, -1));
+  TEST_ASSERT_EQUAL_UINT32(0, noticeDurationMs(true, -5));
 }
 
 int main(int, char **)

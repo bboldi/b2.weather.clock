@@ -61,6 +61,7 @@ curl -X POST http://<clock-ip>/notice \
 - **`delay`:**
   - The value is in seconds. The default is 60 and the maximum is 3600.
   - `0` clears the current notice.
+  - `-1` keeps the notice until the button, a newer notice or `0` removes it. It is lost when the clock restarts.
   - A newer notice replaces the current one.
   - The button dismisses the current notice.
 - **Styles:** `simple`, `fade_in_out`, `slow_blink` and `fast_blink`, set per row.

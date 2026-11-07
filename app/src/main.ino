@@ -804,8 +804,8 @@ void loop()
     displayNoTime();
   }
 
-  // notice ends by itself after its duration
-  if (notice.active && elapsed(millis(), notice.start, notice.duration))
+  // notice ends by itself after its duration, unless it is permanent (delay -1)
+  if (notice.active && notice.duration != clocklogic::NOTICE_FOREVER && elapsed(millis(), notice.start, notice.duration))
   {
     notice.active = false;
   }
