@@ -113,6 +113,14 @@ curl -X POST http://<clock-ip>/weather \
 - **Gestures:** every click, double click (two clicks within 400 ms) and long press (1 s) is POSTed to `_BUTTON_EVENT_URL_` as `{"event":"click|double_click|long_press","device":"b2-weather-clock"}`, for example to a Home Assistant webhook. Leave the URL empty to send nothing.
 - **Click delay:** a click acts 400 ms after the release, because the clock waits to see whether a second click comes.
 
+### Home Assistant example
+
+The owner's setup (https://github.com/bboldi/iot.refactor, `wall_clock.yaml`) uses a webhook with `local_only: true` and the POST method only:
+
+- **double click:** shows `Tmrw` / `Wthr` and tomorrow's forecast as a Weather notice for 10 s.
+- **long press:** shows the boiler flow and return temperatures (`50*` / `45*`) for 10 s.
+- **After either view,** HA sends the active alert Notice again.
+
 ## Transitions
 
 When the segments of a digit change, the digit plays a short animation. The style is set with `_TRANSITION_STYLE_`:
