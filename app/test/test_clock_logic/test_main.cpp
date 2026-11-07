@@ -279,9 +279,98 @@ void test_repeat_filter()
   TEST_ASSERT_TRUE(f.allow("err c", 603000, 600000)); // evicts the oldest slot
 }
 
+// digit from the user's numbering: 1 top, 2 upper left, 3 upper right, 4 middle, 5 lower left, 6 lower right, 7 bottom
+static const uint8_t USER_TO_IX[] = {0, IX_A, IX_F, IX_B, IX_G, IX_E, IX_C, IX_D};
+
+static uint8_t userMask(const char *segments)
+{
+  uint8_t m = 0;
+  for (const char *p = segments; *p; p++)
+    m |= 1 << USER_TO_IX[*p - '0'];
+  return m;
+}
+
+static void digitOf(const char *segments, Rgb out[7], Rgb color = {255, 255, 255})
+{
+  uint8_t m = userMask(segments);
+  for (int i = 0; i < 7; i++)
+    out[i] = (m >> i) & 1 ? color : Rgb{0, 0, 0};
+}
+
+void test_slide_up_two_to_three()
+{
+  Rgb two[7], three[7], out[7];
+  digitOf("13457", two);
+  digitOf("13467", three);
+
+  transitionFrame(TR_SLIDE_UP, two, three, 0, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(userMask("1247"), litMask(out)); // 2 moved up once + top of 3 at the bottom
+  transitionFrame(TR_SLIDE_UP, two, three, SLIDE_STEP_MS, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(userMask("1467"), litMask(out)); // top of 2 + 3 moved in twice
+  TEST_ASSERT_TRUE(transitionFrame(TR_SLIDE_UP, two, three, 2 * SLIDE_STEP_MS, 0, out));
+  TEST_ASSERT_EQUAL_HEX8(userMask("13467"), litMask(out));
+}
+
+void test_spiral_order_then_fade_in()
+{
+  Rgb eight[7], one[7], out[7];
+  digitOf("1234567", eight);
+  digitOf("36", one);
+
+  transitionFrame(TR_SPIRAL, eight, one, 0, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(userMask("123567"), litMask(out)); // middle first
+  transitionFrame(TR_SPIRAL, eight, one, 3 * SPIRAL_STEP_MS, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(userMask("567"), litMask(out)); // 4,2,1,3 gone
+  transitionFrame(TR_SPIRAL, eight, one, 6 * SPIRAL_STEP_MS, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(0, litMask(out));
+  transitionFrame(TR_SPIRAL, eight, one, 7 * SPIRAL_STEP_MS + SPIRAL_FADE_MS / 2, 0, out);
+  TEST_ASSERT_EQUAL_HEX8(userMask("36"), litMask(out));
+  TEST_ASSERT_UINT8_WITHIN(2, 127, out[IX_B].r); // half way faded in
+  TEST_ASSERT_TRUE(transitionFrame(TR_SPIRAL, eight, one, 7 * SPIRAL_STEP_MS + SPIRAL_FADE_MS, 0, out));
+}
+
+void test_fade_and_glitch()
+{
+  Rgb from[7], to[7], out[7];
+  digitOf("1", from, {200, 0, 0});
+  digitOf("7", to, {0, 0, 200});
+
+  transitionFrame(TR_FADE, from, to, FADE_MS / 2, 0, out);
+  TEST_ASSERT_UINT8_WITHIN(2, 100, out[IX_A].r);
+  TEST_ASSERT_UINT8_WITHIN(2, 100, out[IX_D].b);
+  TEST_ASSERT_TRUE(transitionFrame(TR_FADE, from, to, FADE_MS, 0, out));
+
+  // glitch only uses the new digit's color, and finishes on the new digit
+  for (long t = 0; t < (long)GLITCH_MS; t += GLITCH_STEP_MS)
+  {
+    TEST_ASSERT_FALSE(transitionFrame(TR_GLITCH, from, to, t, 7, out));
+    for (int i = 0; i < 7; i++)
+      TEST_ASSERT_TRUE(!isLit(out[i]) || out[i].b == 200);
+  }
+  TEST_ASSERT_TRUE(transitionFrame(TR_GLITCH, from, to, GLITCH_MS, 7, out));
+  TEST_ASSERT_EQUAL_HEX8(userMask("7"), litMask(out));
+}
+
+void test_transition_not_started_and_none()
+{
+  Rgb from[7], to[7], out[7];
+  digitOf("1", from);
+  digitOf("7", to);
+  TEST_ASSERT_FALSE(transitionFrame(TR_FADE, from, to, -50, 0, out));
+  TEST_ASSERT_EQUAL_HEX8(userMask("1"), litMask(out));
+  TEST_ASSERT_TRUE(transitionFrame(TR_NONE, from, to, 0, 0, out));
+  TEST_ASSERT_EQUAL_HEX8(userMask("7"), litMask(out));
+  TEST_ASSERT_EQUAL(TR_RANDOM, parseTransition("random"));
+  TEST_ASSERT_EQUAL(TR_SPIRAL, parseTransition("spiral"));
+}
+
 int main(int, char **)
 {
   UNITY_BEGIN();
+  RUN_TEST(test_slide_up_two_to_three);
+  RUN_TEST(test_spiral_order_then_fade_in);
+  RUN_TEST(test_fade_and_glitch);
+  RUN_TEST(test_transition_not_started_and_none);
   RUN_TEST(test_repeat_filter);
   RUN_TEST(test_log_ring_keeps_lines_in_order);
   RUN_TEST(test_log_ring_drops_oldest_and_cut_line);

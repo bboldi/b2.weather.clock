@@ -432,4 +432,178 @@ struct RepeatFilter
   }
 };
 
+// ---- Transition: animation of a digit when its segments change ----
+
+// segment index inside a digit, the order of the leds on the strip (same as DIGIT in main.ino)
+enum : uint8_t
+{
+  IX_E = 0, IX_F = 1, IX_D = 2, IX_G = 3, IX_A = 4, IX_C = 5, IX_B = 6
+};
+
+enum TransitionStyle : uint8_t
+{
+  TR_NONE, TR_SLIDE_UP, TR_SPIRAL, TR_GLITCH, TR_FADE, TR_RANDOM
+};
+
+inline TransitionStyle parseTransition(const char *s)
+{
+  if (!s || !strcmp(s, "none"))
+    return TR_NONE;
+  if (!strcmp(s, "slide_up"))
+    return TR_SLIDE_UP;
+  if (!strcmp(s, "spiral"))
+    return TR_SPIRAL;
+  if (!strcmp(s, "glitch"))
+    return TR_GLITCH;
+  if (!strcmp(s, "fade"))
+    return TR_FADE;
+  return TR_RANDOM;
+}
+
+const uint32_t SLIDE_STEP_MS = 120;
+const uint32_t SPIRAL_STEP_MS = 60;
+const uint32_t SPIRAL_FADE_MS = 300;
+const uint32_t GLITCH_MS = 400;
+const uint32_t GLITCH_STEP_MS = 50;
+const uint32_t FADE_MS = 400;
+const uint32_t STAGGER_MS = 120;
+
+inline bool isLit(const Rgb &c) { return c.r || c.g || c.b; }
+
+// bit i set if segment index i is lit
+inline uint8_t litMask(const Rgb seg[7])
+{
+  uint8_t m = 0;
+  for (int i = 0; i < 7; i++)
+    if (isLit(seg[i]))
+      m |= 1 << i;
+  return m;
+}
+
+inline Rgb scaleRgb(Rgb c, uint8_t level)
+{
+  return {(uint8_t)(c.r * level / 255), (uint8_t)(c.g * level / 255), (uint8_t)(c.b * level / 255)};
+}
+
+inline Rgb blendRgb(Rgb a, Rgb b, uint8_t amount)
+{
+  return {(uint8_t)(a.r + (b.r - a.r) * amount / 255), (uint8_t)(a.g + (b.g - a.g) * amount / 255),
+          (uint8_t)(a.b + (b.b - a.b) * amount / 255)};
+}
+
+// every segment one level up: bottom -> middle -> top, lower verticals -> upper ones, the top leaves
+inline void shiftUp(const Rgb in[7], Rgb out[7])
+{
+  for (int i = 0; i < 7; i++)
+    out[i] = {0, 0, 0};
+  out[IX_A] = in[IX_G];
+  out[IX_G] = in[IX_D];
+  out[IX_F] = in[IX_E];
+  out[IX_B] = in[IX_C];
+}
+
+// every segment one level down, the bottom leaves
+inline void shiftDown(const Rgb in[7], Rgb out[7])
+{
+  for (int i = 0; i < 7; i++)
+    out[i] = {0, 0, 0};
+  out[IX_G] = in[IX_A];
+  out[IX_D] = in[IX_G];
+  out[IX_E] = in[IX_F];
+  out[IX_C] = in[IX_B];
+}
+
+/**
+ * One frame of a digit transition, t ms after its start (negative: not started yet).
+ * Returns true when finished, out is then the new digit.
+ */
+inline bool transitionFrame(TransitionStyle style, const Rgb from[7], const Rgb to[7], long t, uint32_t seed, Rgb out[7])
+{
+  if (t < 0)
+  {
+    for (int i = 0; i < 7; i++)
+      out[i] = from[i];
+    return false;
+  }
+
+  switch (style)
+  {
+  case TR_SLIDE_UP:
+  {
+    // old one scrolls out at the top while the new one scrolls in from the bottom
+    long step = t / SLIDE_STEP_MS; // 0: 1 level, 1: 2 levels, then done
+    if (step >= 2)
+      break;
+    Rgb oldPart[7], newPart[7], tmp[7];
+    shiftUp(from, oldPart);
+    shiftDown(to, tmp);
+    if (step == 0)
+      shiftDown(tmp, newPart);
+    else
+    {
+      for (int i = 0; i < 7; i++)
+        newPart[i] = tmp[i];
+      shiftUp(oldPart, tmp);
+      for (int i = 0; i < 7; i++)
+        oldPart[i] = tmp[i];
+    }
+    for (int i = 0; i < 7; i++)
+      out[i] = isLit(newPart[i]) ? newPart[i] : oldPart[i];
+    return false;
+  }
+
+  case TR_SPIRAL:
+  {
+    // segments go dark one by one: middle, upper left, top, upper right, lower right, bottom, lower left
+    static const uint8_t ORDER[] = {IX_G, IX_F, IX_A, IX_B, IX_C, IX_D, IX_E};
+    long off = t / SPIRAL_STEP_MS + 1;
+    if (off <= 7)
+    {
+      for (int i = 0; i < 7; i++)
+        out[i] = from[i];
+      for (long i = 0; i < off; i++)
+        out[ORDER[i]] = {0, 0, 0};
+      return false;
+    }
+    long fadeT = t - 7 * (long)SPIRAL_STEP_MS;
+    if (fadeT >= (long)SPIRAL_FADE_MS)
+      break;
+    for (int i = 0; i < 7; i++)
+      out[i] = scaleRgb(to[i], (uint8_t)(fadeT * 255 / SPIRAL_FADE_MS));
+    return false;
+  }
+
+  case TR_GLITCH:
+  {
+    if (t >= (long)GLITCH_MS)
+      break;
+    // random segments in the new digit's color (the old one's if the new is empty)
+    Rgb color = {0, 0, 0};
+    for (int i = 0; i < 7 && !isLit(color); i++)
+      color = isLit(to[i]) ? to[i] : color;
+    for (int i = 0; i < 7 && !isLit(color); i++)
+      color = isLit(from[i]) ? from[i] : color;
+    uint32_t x = seed * 2654435761u + (uint32_t)(t / GLITCH_STEP_MS) * 40503u + 1;
+    x ^= x << 13, x ^= x >> 17, x ^= x << 5;
+    for (int i = 0; i < 7; i++)
+      out[i] = (x >> (i * 3)) & 1 ? color : Rgb{0, 0, 0};
+    return false;
+  }
+
+  case TR_FADE:
+    if (t >= (long)FADE_MS)
+      break;
+    for (int i = 0; i < 7; i++)
+      out[i] = blendRgb(from[i], to[i], (uint8_t)(t * 255 / FADE_MS));
+    return false;
+
+  default:
+    break;
+  }
+
+  for (int i = 0; i < 7; i++)
+    out[i] = to[i];
+  return true;
+}
+
 } // namespace clocklogic

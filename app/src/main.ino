@@ -158,6 +158,31 @@ struct RtcLog
 } rtcLog;
 #endif
 
+// transitions: each digit animates from what it showed to what the display code drew this frame
+
+#ifndef _TRANSITION_STYLE_
+#define _TRANSITION_STYLE_ "random"
+#define _TRANSITION_ON_TIME_ true
+#define _TRANSITION_ON_START_ true
+#define _TRANSITION_ON_NOTICE_ true
+#define _TRANSITION_ON_TEMP_ true
+#endif
+
+const byte DIGIT_START[] = {0, 7, 16, 23, 30, 37, 44, 51};
+
+struct DigitTransition
+{
+  clocklogic::Rgb from[7], to[7], shown[7];
+  clocklogic::TransitionStyle style = clocklogic::TR_NONE;
+  unsigned long start = 0;
+  bool running = false;
+} digitTransitions[8];
+
+bool transitionsReady = false; // the very first frame is drawn without animation
+bool timeWasShown = false;
+bool lastNoticeActive = false;
+uint32_t noticeSerial = 0, lastNoticeSerial = 0;
+
 unsigned long lastStatusLog = 0;
 int lastWiFiStatus = -1;
 volatile bool timeSyncEvent = false;
@@ -1048,6 +1073,9 @@ void loop()
     }
   }
 
+  animateDigits();
+  applyNoticeStyles();
+
   // update display
   FastLED.show();
 
@@ -1084,9 +1112,9 @@ void setGlyph(byte position, uint8_t segments, CRGB color)
   }
 }
 
-void displayNoticeRow(const clocklogic::RowLayout &row, byte firstDigit, CRGB color, clocklogic::NoticeStyle style)
+// full color here, the style (blink, fade) is applied after the digit transitions, see applyNoticeStyles
+void displayNoticeRow(const clocklogic::RowLayout &row, byte firstDigit, CRGB color)
 {
-  color.nscale8(clocklogic::styleLevel(style, millis() - notice.start));
   for (byte i = 0; i < 4; i++)
   {
     setGlyph(firstDigit + i, row.segments[i], color);
@@ -1097,7 +1125,7 @@ void displayNotice()
 {
   if (notice.hasTop)
   {
-    displayNoticeRow(notice.top, 0, notice.topColor, notice.topStyle);
+    displayNoticeRow(notice.top, 0, notice.topColor);
     CRGB dotColor = notice.topColor;
     dotColor.nscale8(clocklogic::styleLevel(notice.topStyle, millis() - notice.start));
     leds[DOT_UPPER_LED] = (notice.top.dots & clocklogic::DOT_UPPER) ? dotColor : backgroundColor;
@@ -1105,7 +1133,7 @@ void displayNotice()
   }
   if (notice.hasBottom)
   {
-    displayNoticeRow(notice.bottom, 4, notice.bottomColor, notice.bottomStyle);
+    displayNoticeRow(notice.bottom, 4, notice.bottomColor);
   }
 }
 
@@ -1171,7 +1199,114 @@ void handleNotice()
 
   // a newer notice replaces the current one, delay 0 clears it
   notice = next;
+  noticeSerial++;
   logf("notice %s top '%s' bottom '%s' delay %ld", notice.active ? "shown" : "cleared", (const char *)(doc["top"] | ""),
        (const char *)(doc["bottom"] | ""), notice.duration == clocklogic::NOTICE_FOREVER ? -1L : (long)notice.duration / 1000);
   server.send(200, "application/json", notice.active ? "{\"status\":\"shown\"}" : "{\"status\":\"cleared\"}");
+}
+
+/**
+ * Animate the 8 digits: what the display code drew into leds is the target, a changed target starts a
+ * Transition from what is shown right now; color only changes apply at once
+ */
+void animateDigits()
+{
+  bool noticeEvent = notice.active != lastNoticeActive || noticeSerial != lastNoticeSerial;
+  lastNoticeActive = notice.active;
+  lastNoticeSerial = noticeSerial;
+
+  bool startEvent = timeSynced && !timeWasShown;
+  timeWasShown = timeWasShown || timeSynced;
+
+  static const clocklogic::TransitionStyle CONFIGURED = clocklogic::parseTransition(_TRANSITION_STYLE_);
+  clocklogic::TransitionStyle style = CONFIGURED;
+  if (style == clocklogic::TR_RANDOM)
+  {
+    style = (clocklogic::TransitionStyle)random(clocklogic::TR_SLIDE_UP, clocklogic::TR_FADE + 1);
+  }
+
+  unsigned long now = millis();
+  for (int row = 0; row < 2; row++)
+  {
+    bool enabled = noticeEvent ? _TRANSITION_ON_NOTICE_
+                   : row == 0  ? (startEvent ? _TRANSITION_ON_START_ : _TRANSITION_ON_TIME_)
+                               : _TRANSITION_ON_TEMP_;
+    int staggered = 0;
+
+    // right to left, so a carry ripples through the changed digits
+    for (int d = row * 4 + 3; d >= row * 4; d--)
+    {
+      DigitTransition &tr = digitTransitions[d];
+      clocklogic::Rgb target[7];
+      for (int i = 0; i < 7; i++)
+      {
+        CRGB c = leds[DIGIT_START[d] + i];
+        target[i] = {c.r, c.g, c.b};
+      }
+
+      if (!transitionsReady || clocklogic::litMask(target) == clocklogic::litMask(tr.to))
+      {
+        // same segments: just follow the color
+        for (int i = 0; i < 7; i++)
+        {
+          tr.to[i] = target[i];
+          if (!tr.running)
+            tr.shown[i] = target[i];
+        }
+      }
+      else
+      {
+        for (int i = 0; i < 7; i++)
+        {
+          tr.from[i] = tr.shown[i];
+          tr.to[i] = target[i];
+        }
+        tr.style = enabled ? style : clocklogic::TR_NONE;
+        tr.start = now + staggered * clocklogic::STAGGER_MS;
+        tr.running = tr.style != clocklogic::TR_NONE;
+        staggered += tr.running ? 1 : 0;
+        if (!tr.running)
+        {
+          for (int i = 0; i < 7; i++)
+            tr.shown[i] = target[i];
+        }
+      }
+
+      if (tr.running)
+      {
+        tr.running = !clocklogic::transitionFrame(tr.style, tr.from, tr.to, (long)(now - tr.start), d * 7919 + tr.start,
+                                                  tr.shown);
+      }
+
+      for (int i = 0; i < 7; i++)
+      {
+        leds[DIGIT_START[d] + i] = CRGB(tr.shown[i].r, tr.shown[i].g, tr.shown[i].b);
+      }
+    }
+  }
+  transitionsReady = true;
+}
+
+/**
+ * Blink / fade style of the notice rows, after the transitions so blinking does not count as a change
+ */
+void applyNoticeStyles()
+{
+  if (!notice.active)
+  {
+    return;
+  }
+  unsigned long t = millis() - notice.start;
+  if (notice.hasTop)
+  {
+    for (int d = 0; d < 4; d++)
+      for (int i = 0; i < 7; i++)
+        leds[DIGIT_START[d] + i].nscale8(clocklogic::styleLevel(notice.topStyle, t));
+  }
+  if (notice.hasBottom)
+  {
+    for (int d = 4; d < 8; d++)
+      for (int i = 0; i < 7; i++)
+        leds[DIGIT_START[d] + i].nscale8(clocklogic::styleLevel(notice.bottomStyle, t));
+  }
 }

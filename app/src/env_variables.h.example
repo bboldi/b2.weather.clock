@@ -40,3 +40,10 @@
 
 // debug log in RAM and GET /debug (protected by _NOTICE_TOKEN_ if set), costs about 7 KB RAM
 #define _DEBUG_ false
+
+// digit Transitions: slide_up | spiral | glitch | fade | random | none
+#define _TRANSITION_STYLE_ "random"
+#define _TRANSITION_ON_TIME_ true   // minute / hour change
+#define _TRANSITION_ON_START_ true  // from the dashes to the first time shown
+#define _TRANSITION_ON_NOTICE_ true // a notice appears or ends
+#define _TRANSITION_ON_TEMP_ true   // inside / outside switch, temperature change

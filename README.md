@@ -91,3 +91,21 @@ curl http://<clock-ip>/debug                         # or ?token=<token> / Beare
   - Successful temperature uploads are left out.
 - **After a restart:** the last lines are kept in RTC memory and are shown as `--- previous boot ---`. They survive a reset or a crash, but not a power loss.
 - **Serial:** the serial output (115200) has everything, also with `_DEBUG_ false`.
+
+## Transitions
+
+When the segments of a digit change, the digit plays a short animation. The style is set with `_TRANSITION_STYLE_`:
+
+- `slide_up`: the old digit scrolls out at the top while the new one scrolls in from the bottom.
+- `spiral`: the old segments go dark one by one (middle, upper left, top, upper right, lower right, bottom, lower left), then the new digit fades in.
+- `glitch`: random segments flicker in the new digit's color, then the new digit shows.
+- `fade`: the old digit fades into the new one.
+- `random`: the default. One of the four styles above is picked for each change.
+- `none`: no animation.
+
+When several digits change at once, they start one after the other, from right to left. A change that only affects the color, such as the temperature color gradient, applies at once without animation. The `_TRANSITION_ON_*_` switches choose which changes animate:
+
+- `_TRANSITION_ON_TIME_`: a minute or hour change.
+- `_TRANSITION_ON_START_`: the change from the dashes to the first time shown.
+- `_TRANSITION_ON_NOTICE_`: a notice appears or ends.
+- `_TRANSITION_ON_TEMP_`: the inside/outside switch, or a temperature change.
