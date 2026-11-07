@@ -105,6 +105,11 @@ struct WeatherNotice
 } weatherNotice;
 
 uint32_t sensorRecoveries = 0;
+uint32_t retriedReads = 0;
+uint32_t sensorReads = 0;
+int lastSendCode = 0;
+unsigned long lastSendAt = 0;
+float lastSendValue = 0;
 
 // animation
 
@@ -351,7 +356,8 @@ void handleDebug()
            "time: %s %02ld:%02ld:%02ld, last sync %lds ago (%s)\n"
            "utc offset: %s %ld, %lds old\n"
            "weather: %s, last ok %lds ago, icon %s temp %d\n"
-           "inside: %s %.2f C, recovered reads %lu\n"
+           "inside: %s %.2f C, reads %lu, ok on 2nd read %lu, recovered by bus reset %lu\n"
+           "temp send: last %.2f C -> %d, %lds ago\n"
            "notice: %s, weather notice: %s\n"
            "\n--- log ---\n",
            __DATE__, __TIME__, millis() / 1000, ESP.getResetReason().c_str(),
@@ -363,7 +369,8 @@ void handleDebug()
            hasServerOffset ? (long)((millis() - serverOffsetAt) / 1000) : -1L,
            hasWeather ? "yes" : "no", hasWeather ? (long)((millis() - weatherUpdated) / 1000) : -1L,
            forecast.c_str(), temperature,
-           insideOk ? "ok" : "NO SENSOR", insideTempC, (unsigned long)sensorRecoveries,
+           insideOk ? "ok" : "NO SENSOR", insideTempC, (unsigned long)sensorReads, (unsigned long)retriedReads, (unsigned long)sensorRecoveries,
+           lastSendValue, lastSendCode, lastSendAt ? (long)((millis() - lastSendAt) / 1000) : -1L,
            notice.active ? "active" : "none", weatherNotice.active ? weatherNotice.icon.c_str() : "none");
 
   const char *a, *b;
@@ -671,8 +678,17 @@ void readInsideTemp()
 {
   // by index, so a sensor plugged in after boot is found too
   bool wasOk = insideOk;
+  sensorReads++;
   insideTempC = DS18B20.getTempCByIndex(0);
   insideOk = insideTempC != DEVICE_DISCONNECTED_C;
+
+  if (!insideOk)
+  {
+    // a plain second read first, cheap
+    insideTempC = DS18B20.getTempCByIndex(0);
+    insideOk = insideTempC != DEVICE_DISCONNECTED_C;
+    retriedReads += insideOk ? 1 : 0;
+  }
 
   if (!insideOk)
   {
@@ -719,6 +735,9 @@ void sendTemperature()
       http.setAuthorization(_SEND_TEMP_USER, _SEND_TEMP_PASS);
     }
     int responseCode = http.GET();
+    lastSendCode = responseCode;
+    lastSendAt = millis();
+    lastSendValue = insideTempC;
     // success every 30 s is noise, only failures go to the debug log
     if (responseCode == HTTP_CODE_OK)
       Serial.printf("send temperature -> %d\n", responseCode);
