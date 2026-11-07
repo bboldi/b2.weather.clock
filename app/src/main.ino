@@ -3,6 +3,8 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WebServer.h>
+#include <time.h>
+#include <coredecls.h>
 #include <WiFiManager.h>
 
 #include <FastLED.h>
@@ -11,8 +13,12 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
+#include <clock_logic.h>
+
 // only added so I don't have to push my passwords to git repo
 #include <env_variables.h>
+
+using clocklogic::elapsed;
 
 // pin consts
 
@@ -26,14 +32,18 @@
 #define COLOR_ORDER GRB
 #define NUM_LEDS 64
 
-// time related
+// network related
 
-#define TIME_API_URL "http://worldtimeapi.org/api/ip"
-#define LOCATION_URL "http://ip-api.com/json"
-#define OPENWEATHER_URL_FORECAST "http://api.openweathermap.org/data/2.5/forecast?units=metric&cnt=2&appid=" _OPENWEATHER_API_KEY_
-#define OPENWEATHER_URL_CURRENT "http://api.openweathermap.org/data/2.5/weather?units=metric&appid=" _OPENWEATHER_API_KEY_
+#define LOCATION_URL "http://ip-api.com/json?fields=status,lat,lon"
+#define OPENWEATHER_URL "http://api.openweathermap.org/data/2.5/"
+#define NTP_SERVER_1 "pool.ntp.org"
+#define NTP_SERVER_2 "time.google.com"
+#define HTTP_TIMEOUT 3000 // ms, keeps the display from freezing long on a bad network
 
-// weather related
+// temperature related
+
+const char *OPENWEATHER_UNITS = _USE_FAHRENHEIT_ ? "imperial" : "metric";
+const char *TEMP_SUFFIX = _USE_FAHRENHEIT_ ? ",51,52,54,55," /* "F" */ : ",54,51,53," /* "c" */;
 
 #define TEMP_FREEZING _TEMP_FREEZING_
 #define TEMP_COLD _TEMP_COLD_
@@ -42,20 +52,29 @@
 
 // timer/animation related
 
-#define UPDATE_FORECAST 900000 // update data every N mins
-#define DOT_CHANGE_TIME 500    // animate dot after N millisec
-#define TEMP_CHANGE 15000      // how often to change temp display
+#define UPDATE_WEATHER 900000      // fetch weather every 15 min
+#define RETRY_WEATHER 60000        // retry after 1 min if the last fetch failed
+#define WEATHER_MAX_AGE 7200000    // hide weather if there is no fresh data for 2 hours
+#define UPDATE_TIME_SERVER 3600000 // fetch utc offset every hour
+#define RETRY_TIME_SERVER 60000    // retry after 1 min if the last fetch failed
+#define OFFSET_MAX_AGE 10800000    // use the fallback time zone if the time server offset is older than 3 hours
+#define NTP_MISSED 5400000         // SNTP syncs hourly, after 1.5 hours without sync take the time server's time
+#define TIME_MAX_AGE 10800000      // tint the dots if there was no time sync for 3 hours
+#define DOT_CHANGE_TIME 500        // blink dot after N millisec
+#define DOT_FADE_PERIOD 2000       // one fade in + fade out of the dot
+#define TEMP_CHANGE 15000          // how often to change temp display
+#define BUTTON_DEBOUNCE 50
 
 // misc
 
 #define LED_BRIGHTNESS 255
-#define RETRY_AFTER_ERROR 15000
+#define NIGHT_BRIGHTNESS _NIGHT_BRIGHTNESS_
 #define CONFIG_AP_PASS _CONFIG_AP_PASSWORD_
 #define CONFIG_AP_NAME "b2.weather.clock"
 #define CONFIG_AP_TIMEOUT 180
 
-#define TEMP_SUFFIX ",54,51,53," // "c"
-// #define TEMP_SUFFIX ",51,52,54,55," // "F"
+// sizeof("") == 1, so this checks for a non empty string define
+#define IS_SET(define) (sizeof(define) > 1)
 
 // variables
 
@@ -63,46 +82,63 @@
 
 CRGB leds[NUM_LEDS];
 
-HTTPClient httpTime;
-HTTPClient httpLocation;
-HTTPClient httpForecast;
-HTTPClient httpTemperature;
-HTTPClient httpSendTemp;
-
 WiFiManager wifiManager;
+
+clocklogic::Debouncer button(BUTTON_DEBOUNCE);
 
 // animation
 
-unsigned long dotAnimationTime = DOT_CHANGE_TIME;
+unsigned long dotAnimationTime = 0;
 bool dotVisible = false;
 
-unsigned long changeTempDisplay = TEMP_CHANGE;
+unsigned long changeTempDisplay = 0;
 bool showForecast = true;
 
-unsigned long forecastUpdated = 0;
+// time: UTC comes from NTP (or the time server), the offset from the time server or the fallback TZ
 
-// data we fetched from time server
+bool timeSynced = false;
+unsigned long lastTimeSync = 0;
 
-int unixTime;
+bool timeServerOk = false;
+unsigned long timeServerAttempt = 0;
+bool hasServerOffset = false;
+long serverOffset = 0;
+unsigned long serverOffsetAt = 0;
 
-// when did we fetch the time exactly
+// location, the default is used until the auto location works
 
-unsigned long timeFetchedDiff;
+bool autoLocationOk = false;
+float lat = _DEFAULT_LAT_;
+float lng = _DEFAULT_LON_;
 
-// display time values
+// weather
 
-int displayH = 0;
-int displayM = 0;
-int displayS = 0;
+String forecast = "";
+int temperature = 0;
+bool hasWeather = false;
+bool weatherFetchOk = false;
+unsigned long weatherUpdated = 0; // last successful fetch
+unsigned long weatherAttempt = 0; // last fetch attempt
 
-// location
+// notice: text sent from outside (Home Assistant), shown on a row for a while
 
-String lat = "";
-String lng = "";
+struct Notice
+{
+  bool active = false;
+  unsigned long start = 0;
+  uint32_t duration = 0;
+  bool hasTop = false, hasBottom = false;
+  clocklogic::RowLayout top, bottom;
+  CRGB topColor, bottomColor;
+  clocklogic::NoticeStyle topStyle = clocklogic::STYLE_SIMPLE, bottomStyle = clocklogic::STYLE_SIMPLE;
+  bool nightDim = true;
+} notice;
 
-// error container
+ESP8266WebServer server(80);
 
-int errorCode = 0;
+// ponytail: guessed from the wiring, verify with a "12'34" / "12.34" notice
+#define DOT_UPPER_LED 14
+#define DOT_LOWER_LED 15
 
 // digit definitions
 
@@ -119,28 +155,27 @@ bool DIGIT[][7] = {
     {0, 1, 1, 1, 1, 1, 1}};
 
 CRGB clockColor = CRGB::White;
-CRGB errorColor = CRGB(255, 0, 0);
+CRGB staleDotColor = CRGB(255, 120, 120); // dots when the time could not be synced for a while
 CRGB messageColor = CRGB(0, 255, 0);
 CRGB indicatorColorOut = CRGB::Green;
 CRGB indicatorColorIn = CRGB::Green;
 
-CRGB temperatureColorFreezing = CRGB::Blue;
-CRGB temperatureColorCold = CRGB::DodgerBlue;
-CRGB temperatureColorNormal = CRGB::Gold;
-CRGB temperatureColorHot = CRGB::Red;
+// temperature colors fade linearly between these points
+const clocklogic::ColorStop temperatureColors[] = {
+    {TEMP_FREEZING, {0, 0, 255}},  // Blue
+    {TEMP_COLD, {30, 144, 255}},   // DodgerBlue
+    {TEMP_NORMAL, {255, 215, 0}},  // Gold
+    {TEMP_HOT, {255, 0, 0}},       // Red
+};
 
 CRGB backgroundColor = CRGB(0, 0, 0);
-
-CRGB dotFadeContainer = CRGB(0, 0, 0);
 
 // onewire
 
 OneWire oneWire(DS18B20_PIN);
 DallasTemperature DS18B20(&oneWire);
-DeviceAddress devAddr;
-float devTemp;
-
-// temp change
+bool insideOk = false;
+float insideTempC = DEVICE_DISCONNECTED_C;
 
 // code
 
@@ -158,42 +193,25 @@ void turnOnLeds(String pins, CRGB color, boolean doClear = true )
 }
 
 /**
- * Reset error code
+ * Code to connect to wifi, only at startup. Later the ESP reconnects by itself.
  */
-void resetErrorCode()
+void connectToWiFi()
 {
-  errorCode = 0;
-}
+  wifiManager.setAPCallback(configModeCallback);
+  wifiManager.setConfigPortalTimeout(CONFIG_AP_TIMEOUT);
 
-
-/**
- * set error code
- */
-void setErrorCode(byte code)
-{
-  errorCode = errorCode | code;
-}
-
-/**
- * Code to connect to wifi
- */
-bool connectToWiFi(bool init = false)
-{
-  if(init)
+  // AP only on button press at restart or when no network is saved yet,
+  // a failed connection (e.g. router still booting) must not block the clock
+  if (digitalRead(BUTTON_PIN) == 1 || !wifiManager.getWiFiIsSaved())
   {
-    // try to connect
-    wifiManager.setAPCallback(configModeCallback);
-    wifiManager.setConfigPortalTimeout(CONFIG_AP_TIMEOUT);
-
-    // if there's a button press when restarting, go to AP
-    if (digitalRead(BUTTON_PIN) == 1) {
-      wifiManager.startConfigPortal(CONFIG_AP_NAME, CONFIG_AP_PASS);
-      return true;
-    }
+    wifiManager.startConfigPortal(CONFIG_AP_NAME, CONFIG_AP_PASS);
   }
 
-  wifiManager.autoConnect(CONFIG_AP_NAME, CONFIG_AP_PASS);
-
+  // connect to the saved network, the ESP keeps retrying in the background if this fails
+  WiFi.mode(WIFI_STA);
+  WiFi.begin();
+  WiFi.waitForConnectResult(15000);
+  Serial.printf("WiFi '%s' status %d ip %s\n", WiFi.SSID().c_str(), WiFi.status(), WiFi.localIP().toString().c_str());
 }
 
 /**
@@ -207,148 +225,166 @@ void configModeCallback(WiFiManager *_wifiMan)
 }
 
 /**
- * Fetch weather
+ * GET an url and parse it as json, false on any error
  */
-void fetchLocation()
+bool getJson(const String &url, JsonDocument &doc)
 {
-  // fetch location
-  delay(500);
-
-  httpLocation.begin(LOCATION_URL);
-  int responseCode = httpLocation.GET();
-
-  Serial.println("Fetch location");
-  Serial.println(LOCATION_URL);
-  Serial.println(httpLocation.getString());
-  Serial.println(responseCode);
-
-  if (responseCode != 200)
+  if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("Error fetching location");
-    // @todo set error code
-
-    setErrorCode(0b1);
-    forecastUpdated = millis() + UPDATE_FORECAST;
+    Serial.printf("No wifi (status %d), skip %s\n", WiFi.status(), url.c_str());
+    return false;
   }
 
-  String data = httpLocation.getString();
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(HTTP_TIMEOUT);
+  http.begin(client, url);
+  int responseCode = http.GET();
+  Serial.printf("GET %s -> %d\n", url.c_str(), responseCode);
 
-  DynamicJsonDocument doc(2048);
-  DeserializationError error = deserializeJson(doc, data);
-  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
-
-  String _lat = doc["lat"];
-  String _lng = doc["lon"];
-
-  lat = _lat;
-  lng = _lng;
-
-  Serial.print("\nlat: ");
-  Serial.print(lat);
-  Serial.print(" lng: ");
-  Serial.print(lng);
-  httpLocation.end();
+  bool ok = false;
+  if (responseCode == HTTP_CODE_OK)
+  {
+    DeserializationError error = deserializeJson(doc, http.getString());
+    if (error) { Serial.println(error.c_str()); }
+    ok = !error;
+  }
+  http.end();
+  return ok;
 }
-
-String forecast = "";
-String temperature = "";
 
 /**
- * Fetch weather
+ * Fetch utc offset from the time server, and the time too if NTP is not working
  */
-void fetchWeather()
+bool fetchTimeServer()
 {
-  String url = OPENWEATHER_URL_FORECAST;
-  url += "&lat=" + lat + "&lon=" + lng;
-
-  Serial.println(url);
-
-  // fetch weather
-  httpForecast.begin(url);
-  int responseCode = httpForecast.GET();
-
-  Serial.println("Fetch forecast");
-  Serial.println(responseCode);
-
-  if (responseCode != 200)
+  JsonDocument doc;
+  long offset;
+  if (!getJson(_TIME_SERVER_URL_, doc) || !clocklogic::parseUtcOffset(doc["utc_offset"] | "", offset))
   {
-    Serial.println("\nError fetching weather forecast");
-    // @todo set error code
-    // @todo set update time to 5 sec from now to try and update it
-    // maybe we should do this for the rest
-
-    setErrorCode(0b10);
-
-    // update it in 5 seconds
-    // if(millis() - forecastUpdated > UPDATE_FORECAST)
-    forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
+    Serial.println("Error fetching time server");
+    return false;
   }
 
-  String data = httpForecast.getString();
+  serverOffset = offset;
+  serverOffsetAt = millis();
+  hasServerOffset = true;
 
-  DynamicJsonDocument doc(2048);
-  DeserializationError error = deserializeJson(doc, data);
-  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
+  long unixtime = doc["unixtime"] | 0L;
+  if (unixtime > 0 && (!timeSynced || elapsed(millis(), lastTimeSync, NTP_MISSED)))
+  {
+    Serial.println("Set time from time server");
+    timeval tv = {unixtime, 0};
+    settimeofday(&tv, nullptr);
+  }
 
-  // get forecast for the next 3 hour
-  String _forecast = doc["list"][0]["weather"][0]["icon"];
-
-  Serial.println("\n---\n");
-  Serial.println(_forecast);
-
-  forecast = _forecast;
-
-  httpForecast.end();
-
-  fetchTemperature();
+  Serial.printf("utc offset: %ld\n", serverOffset);
+  return true;
 }
 
-// fetch temperaturek
-void fetchTemperature()
+void updateTimeServer()
 {
-  String url = OPENWEATHER_URL_CURRENT;
-  url += "&lat=" + lat + "&lon=" + lng;
-
-  Serial.println(url);
-
-  // fetch weather
-  httpTemperature.begin(url);
-  int responseCode = httpTemperature.GET();
-
-  Serial.println("Fetch forecast");
-  Serial.println(responseCode);
-
-  if (responseCode != 200)
+  if (!IS_SET(_TIME_SERVER_URL_))
   {
-    Serial.println("\nError fetching weather current");
-    // @todo set error code
-    // @todo set update time to 5 sec from now to try and update it
-    // maybe we should do this for the rest
+    return;
+  }
+  timeServerAttempt = millis();
+  timeServerOk = fetchTimeServer();
+}
 
-    setErrorCode(0b10);
-
-    // update it in 5 seconds
-    // if(millis() - forecastUpdated > UPDATE_FORECAST)
-    forecastUpdated = millis() - (UPDATE_FORECAST - 5000);
+/**
+ * Seconds since local midnight, offset from the time server if fresh, otherwise the fallback TZ rule
+ */
+long localSecondsOfDay()
+{
+  time_t now = time(nullptr);
+  if (hasServerOffset && !elapsed(millis(), serverOffsetAt, OFFSET_MAX_AGE))
+  {
+    return clocklogic::secondsOfDay(now, serverOffset);
   }
 
-  String data = httpTemperature.getString();
-  Serial.print(data);
+  struct tm local;
+  localtime_r(&now, &local);
+  return local.tm_hour * 3600L + local.tm_min * 60 + local.tm_sec;
+}
 
-  DynamicJsonDocument doc(2048);
-  DeserializationError error = deserializeJson(doc, data);
-  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
+/**
+ * Fetch location based on our ip
+ */
+bool fetchLocation()
+{
+  JsonDocument doc;
+  if (!getJson(LOCATION_URL, doc) || doc["status"] != "success")
+  {
+    Serial.println("Error fetching location, using the default");
+    return false;
+  }
+
+  lat = doc["lat"];
+  lng = doc["lon"];
+
+  Serial.printf("lat: %f lng: %f\n", lat, lng);
+  return true;
+}
+
+void updateLocation()
+{
+  if (_AUTO_LOCATION_ && !autoLocationOk)
+  {
+    autoLocationOk = fetchLocation();
+  }
+}
+
+/**
+ * Fetch forecast icon and current temperature
+ */
+bool fetchWeather()
+{
+  String params = String("&units=") + OPENWEATHER_UNITS + "&appid=" _OPENWEATHER_API_KEY_
+                  "&lat=" + String(lat, 4) + "&lon=" + String(lng, 4);
+  JsonDocument doc;
+
+  // get forecast for the next 3 hour
+  if (!getJson(OPENWEATHER_URL "forecast?cnt=2" + params, doc))
+  {
+    Serial.println("Error fetching weather forecast");
+    return false;
+  }
+  String icon = doc["list"][0]["weather"][0]["icon"] | "";
 
   // get current temperature
-  String _temperature = doc["main"]["temp"];
-  // _temperature = String(_temperature.toFloat()+0.5);
+  if (!getJson(OPENWEATHER_URL "weather?lang=en" + params, doc) || icon == "" || !doc["main"]["temp"].is<float>())
+  {
+    Serial.println("Error fetching weather current");
+    return false;
+  }
 
-  Serial.println("\n---\n");
-  Serial.println(_temperature);
-  Serial.println(_temperature.toInt());
+  forecast = icon;
+  temperature = (int)doc["main"]["temp"].as<float>();
 
-  temperature = _temperature;
-  httpTemperature.end();
+  Serial.printf("forecast: %s temp: %d\n", forecast.c_str(), temperature);
+  return true;
+}
+
+/**
+ * Refresh weather data, measure and send inside temperature
+ */
+void updateWeather()
+{
+  updateLocation();
+
+  weatherAttempt = millis();
+  weatherFetchOk = fetchWeather();
+  if (weatherFetchOk)
+  {
+    weatherUpdated = millis();
+    hasWeather = true;
+  }
+
+  // measure and send temperature no matter if we have data from net
+  // because this might be important for other applications
+  readInsideTemp();
+  sendTemperature();
 }
 
 /**
@@ -363,67 +399,6 @@ void displayForecast(CRGB cloudColor1, CRGB cloudColor2, CRGB sunColor,
   leds[61] = sunColor;
   leds[62] = cloudColor2;
   leds[63] = cloudColor1;
-}
-
-/**
- * Fetch time from api server and set values
- */
-void fetchTime()
-{
-  // get time TODO
-
-  int responseCode = 0;
-
-  httpTime.begin(TIME_API_URL);
-  responseCode = httpTime.GET();
-
-  Serial.println("Fetch time");
-
-  if (responseCode != 200)
-  {
-    Serial.print("\nCannot connect to tiem server; Response code: ");
-    Serial.print(responseCode);
-
-    setErrorCode(0b100);
-
-    // @todo maybe set a refresh time here as well
-  }
-
-  String data = httpTime.getString();
-  Serial.print("Data: ");
-  Serial.print(data);
-
-  // parse data, fetch current time
-
-  DynamicJsonDocument doc(2048);
-  DeserializationError error = deserializeJson(doc, data);
-  if(error.code() != DeserializationError::Ok) { Serial.println(error.c_str()); }
-
-  if (error)
-  {
-    Serial.print("Cannot read time data from:");
-    Serial.println(error.c_str());
-    Serial.print(data);
-    // @todo set time on error to 12:00 or something like that
-  }
-
-  String utime_str = doc["unixtime"];
-  String dtime_str = doc["datetime"];
-
-  int time = utime_str.toInt();
-
-  int hour = dtime_str.substring(11, 13).toInt();
-  int minute = dtime_str.substring(14, 16).toInt();
-  int second = dtime_str.substring(17, 19).toInt();
-
-  unixTime = hour * 60 * 60 + minute * 60 + second;
-  timeFetchedDiff = millis();
-
-  Serial.println("\nTime: ");
-  Serial.println(hour);
-  Serial.println(minute);
-  Serial.println(second);
-  httpTime.end();
 }
 
 /**
@@ -474,42 +449,42 @@ void displayMessage(int index, CRGB color)
   FastLED.show();
 }
 
-//Convert device id to String
-String GetAddressToString(DeviceAddress deviceAddress){
-  String str = "";
-  for (uint8_t i = 0; i < 8; i++){
-    if( deviceAddress[i] < 16 ) str += String(0, HEX);
-    str += String(deviceAddress[i], HEX);
-  }
-  return str;
-}
-
 /**
- * Read ds temperature
+ * Read the result of the last conversion and start a new one, does not block
  */
-void ReadDSTemp()
+void readInsideTemp()
 {
+  // by index, so a sensor plugged in after boot is found too
+  insideTempC = DS18B20.getTempCByIndex(0);
+  insideOk = insideTempC != DEVICE_DISCONNECTED_C;
   DS18B20.requestTemperatures();
-  devTemp = DS18B20.getTempC(devAddr);
+}
+
+int insideTemp()
+{
+  return (int)(_USE_FAHRENHEIT_ ? DallasTemperature::toFahrenheit(insideTempC) : insideTempC);
 }
 
 /**
- * Send temperature to an url
+ * Send temperature (celsius) to an url
  */
 void sendTemperature()
 {
-  if(_SEND_TEMP_URI!="")
+  if (IS_SET(_SEND_TEMP_URI) && insideOk && WiFi.status() == WL_CONNECTED)
   {
-    httpSendTemp.begin(_SEND_TEMP_URI+String(devTemp));
-    if(_SEND_TEMP_USER!="")
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(HTTP_TIMEOUT);
+    http.begin(client, _SEND_TEMP_URI + String(insideTempC));
+    if (IS_SET(_SEND_TEMP_USER))
     {
-      httpSendTemp.setAuthorization(_SEND_TEMP_USER, _SEND_TEMP_PASS);
+      http.setAuthorization(_SEND_TEMP_USER, _SEND_TEMP_PASS);
     }
-    int responseCode = httpSendTemp.GET();
+    int responseCode = http.GET();
     Serial.println("send temperature");
     Serial.println(responseCode);
-    Serial.println(httpSendTemp.getString());
-    httpSendTemp.end();
+    Serial.println(http.getString());
+    http.end();
   }
 }
 
@@ -518,20 +493,14 @@ void sendTemperature()
  */
 void DS18B20Setup()
 {
-  delay(500);
   DS18B20.begin();
-  DS18B20.getAddress(devAddr, 0);
-
-  ReadDSTemp();
-
-  Serial.println("ADDR:");
-  Serial.println(GetAddressToString(devAddr));
-
-  Serial.println("RES:");
-  Serial.println(DS18B20.getResolution(devAddr));
+  // first conversion blocking, so we don't show the 85C power-on value
+  DS18B20.requestTemperatures();
+  DS18B20.setWaitForConversion(false);
+  readInsideTemp();
 
   Serial.println("TEMP_C:");
-  Serial.println(devTemp);
+  Serial.println(insideTempC);
 }
 
 /**
@@ -539,9 +508,6 @@ void DS18B20Setup()
  */
 void setup()
 {
-  // randomize
-  randomSeed(analogRead(0));
-
   // setup serial
   Serial.begin(115200);
 
@@ -564,19 +530,26 @@ void setup()
   delay(500);
   displayMessage(0, messageColor);
   delay(200);
-  connectToWiFi(true);
+  connectToWiFi();
 
-  // fetch time
+  // time sync runs in the background (SNTP, hourly), also called when the time server sets the time
+  settimeofday_cb([]() {
+    lastTimeSync = millis();
+    timeSynced = true;
+  });
+  configTime(_FALLBACK_TZ_, NTP_SERVER_1, NTP_SERVER_2);
+
+  // notice endpoint for Home Assistant
+  server.collectHeaders("Authorization");
+  server.on("/notice", HTTP_POST, handleNotice);
+  server.begin();
+
   displayMessage(1, messageColor);
-  fetchTime();
+  updateTimeServer();
 
-  // fetch location
-  displayMessage(2, messageColor);
-  fetchLocation();
-
-  // fetch weather
+  // fetch location and weather
   displayMessage(3, messageColor);
-  fetchWeather();
+  updateWeather();
 
   // clear screen
   FastLED.clear();
@@ -584,20 +557,15 @@ void setup()
 }
 
 /**
- * calculate current time from initial and millis()
+ * show dashes instead of the clock digits
  */
-void calculateTime()
+void displayNoTime()
 {
-  // millis overflow, fetch time
-  if (millis() < timeFetchedDiff)
+  for (int i = 0; i < 4; i++)
   {
-    fetchTime();
+    setNumber(i, 8, backgroundColor);
   }
-
-  int _time = unixTime + ((millis() - timeFetchedDiff) / 1000);
-  displayS = _time % 60;
-  displayM = (_time / 60) % 60;
-  displayH = (_time / 3600) % 24;
+  turnOnLeds(",3,10,19,26,", clockColor, false);
 }
 
 void displayTime(int h, int m, int s)
@@ -634,13 +602,7 @@ void displayTime(int h, int m, int s)
  */
 void tempDisplaySwitch()
 {
-  // prepare it for millis reset
-  if (changeTempDisplay > millis())
-  {
-    changeTempDisplay = 0;
-  }
-
-  if (millis() - changeTempDisplay >= TEMP_CHANGE)
+  if (elapsed(millis(), changeTempDisplay, TEMP_CHANGE))
   {
     changeTempDisplay = millis();
     showForecast = !showForecast;
@@ -649,8 +611,8 @@ void tempDisplaySwitch()
     Serial.println(showForecast ? "F" : "I");
 
     // refresh temperature if needed
-    if(!showForecast) { 
-      ReadDSTemp(); 
+    if(!showForecast) {
+      readInsideTemp();
       // send temperature to the http link if required
       sendTemperature();
     }
@@ -662,41 +624,11 @@ void tempDisplaySwitch()
  */
 void animateDot()
 {
-  // prepare it for millis reset
-  if (dotAnimationTime > millis())
-  {
-    dotAnimationTime = 0;
-  }
-  if (millis() - dotAnimationTime >= DOT_CHANGE_TIME)
+  if (elapsed(millis(), dotAnimationTime, DOT_CHANGE_TIME))
   {
     dotAnimationTime = millis();
     dotVisible = !dotVisible;
   }
-}
-
-int dotFadeRate = 0;
-int dotFadeRateChange = 1;
-
-void fadeDot()
-{
-  int changeBy = 2;
-  int min = 0;
-  int max = 255;
-  dotFadeRate+=dotFadeRateChange;
-
-  if(dotFadeRate<min)
-  {
-    dotFadeRate=0;
-    dotFadeRateChange=changeBy;
-  }
-
-  if(dotFadeRate>max)
-  {
-    dotFadeRate=max;
-    dotFadeRateChange=-changeBy;
-  }
-
-  dotFadeContainer = CRGB(dotFadeRate, dotFadeRate, dotFadeRate);
 }
 
 /**
@@ -726,45 +658,15 @@ void setNumber(byte position, byte number, CRGB color)
   }
 }
 
-/**
- * Helper function to display error
- */
-void displayError(int code)
+CRGB temperatureColor(int temp)
 {
-  // clear
-  FastLED.clear();
-
-  // display Er:
-  turnOnLeds(",0,1,2,3,4,7,10,14,", errorColor);
-
-  if (code > 9)
-  {
-    setNumber(2, code / 10, errorColor);
-    setNumber(3, code % 10, errorColor);
-  }
-  else
-  {
-    setNumber(2, 0, errorColor);
-    setNumber(3, code, errorColor);
-  }
+  clocklogic::Rgb c = clocklogic::gradientColor(temp, temperatureColors, sizeof(temperatureColors) / sizeof(temperatureColors[0]));
+  return CRGB(c.r, c.g, c.b);
 }
 
-void setTemperature(int temp)
+void setTemperature(int temp, bool outside)
 {
-  CRGB _color = temperatureColorHot;
-
-  if (temp <= TEMP_FREEZING)
-  {
-    _color = temperatureColorFreezing;
-  }
-  else if (temp <= TEMP_COLD)
-  {
-    _color = temperatureColorCold;
-  }
-  else if (temp <= TEMP_HOT)
-  {
-    _color = temperatureColorNormal;
-  }
+  CRGB _color = temperatureColor(temp);
 
   // reset temp numbers
   setNumber(4, 8, backgroundColor);
@@ -812,7 +714,7 @@ void setTemperature(int temp)
   // show indicator if possible
   if(temp<99)
   {
-    turnOnLeds( showForecast ? ",31," : ",30,", showForecast ? indicatorColorOut : indicatorColorIn, false);
+    turnOnLeds( outside ? ",31," : ",30,", outside ? indicatorColorOut : indicatorColorIn, false);
   }
 }
 
@@ -886,115 +788,208 @@ void setForecast(String icon)
 }
 
 /**
- * check if we need to refresh data
- */
-bool doUpdateForecast()
-{
-  if (millis() < forecastUpdated)
-  {
-    forecastUpdated = 0;
-  }
-
-  if (millis() - forecastUpdated > UPDATE_FORECAST)
-  {
-    forecastUpdated = millis();
-    return true;
-  }
-
-  return false;
-}
-
-int insideTemp = 0;
-
-/**
- * Read temperature sensor
- */
-void readTempSensor()
-{
-
-}
-
-int cnt = 0;
-
-/**
  * main loop
  */
 void loop()
 {
-  if (errorCode != 0)
+  // display time, or dashes until we know it
+
+  long secs = localSecondsOfDay();
+  if (timeSynced)
   {
-    displayError(errorCode);
-    FastLED.show();
-    delay(RETRY_AFTER_ERROR);
+    displayTime(secs / 3600, (secs / 60) % 60, secs % 60);
   }
   else
   {
-    // calculate and display time
+    displayNoTime();
+  }
 
-    calculateTime();
-    displayTime(displayH, displayM, displayS);
+  // notice ends by itself after its duration
+  if (notice.active && elapsed(millis(), notice.start, notice.duration))
+  {
+    notice.active = false;
+  }
 
-    // animate dot
+  // night mode, only if we know what time it is, a notice can ask for full brightness
+  bool night = timeSynced && clocklogic::isNight(secs / 3600, _NIGHT_START_HOUR_, _NIGHT_END_HOUR_);
+  bool dim = night && !(notice.active && !notice.nightDim);
+  FastLED.setBrightness(dim ? NIGHT_BRIGHTNESS : LED_BRIGHTNESS);
 
-    if(_DO_FADE)
+  // animate dot, slightly red if the time is not synced for a while
+
+  CRGB dotColor = (timeSynced && !elapsed(millis(), lastTimeSync, TIME_MAX_AGE)) ? clockColor : staleDotColor;
+
+  if(_DO_FADE)
+  {
+    displayDot(true, dotColor.nscale8(clocklogic::fadeLevel(millis(), DOT_FADE_PERIOD)));
+  }
+  else
+  {
+    animateDot();
+    displayDot(dotVisible, dotColor);
+  }
+
+  tempDisplaySwitch();
+
+  // only show what we have: outside needs fresh weather, inside needs the sensor
+
+  bool weatherOk = hasWeather && !elapsed(millis(), weatherUpdated, WEATHER_MAX_AGE);
+  bool showOutside = weatherOk && (showForecast || !insideOk);
+
+  if (showOutside || insideOk)
+  {
+    setTemperature(showOutside ? temperature : insideTemp(), showOutside);
+  }
+  else
+  {
+    // clear temperature digits, suffix and indicator
+    fill_solid(leds + 30, 28, backgroundColor);
+  }
+
+  // set forecast, empty icon turns it off
+  setForecast(weatherOk ? forecast : "");
+
+  // notice rows go over the normal display
+  if (notice.active)
+  {
+    displayNotice();
+  }
+
+  // button dismisses the notice, otherwise switches inside / outside temperature
+  if (button.pressed(digitalRead(BUTTON_PIN) == 1, millis()))
+  {
+    if (notice.active)
     {
-      fadeDot();
-      displayDot(true, dotFadeContainer);
+      notice.active = false;
     }
     else
-    {
-      animateDot();
-      displayDot(dotVisible, clockColor);
-    }
-
-    tempDisplaySwitch();
-    
-
-
-    if(showForecast)
-    {
-      // set temperature
-      setTemperature(temperature.toInt());
-    }
-    else
-    {
-      setTemperature((int)devTemp);
-    }
-
-    // set forecast
-    setForecast(forecast);
-
-    // @todo move this to interrupt
-    if (digitalRead(BUTTON_PIN) == 1)
     {
       showForecast = !showForecast;
       changeTempDisplay = millis();
-      delay(300);
     }
-
-    // update display
-    FastLED.show();
   }
 
-  // do update forecast?
-  if (doUpdateForecast() || errorCode > 0)
+  // update display
+  FastLED.show();
+
+  server.handleClient();
+
+  // refresh data, sooner if the last attempt failed
+  if (elapsed(millis(), weatherAttempt, weatherFetchOk ? UPDATE_WEATHER : RETRY_WEATHER))
   {
-    if (errorCode > 0)
-    {
-      displayMessage(4, errorColor);
-    }
-
-    Serial.println("Refresh data");
-    resetErrorCode();
-
-    connectToWiFi();
-    fetchTime();
-    fetchLocation();
-    fetchWeather();
-
-    // measure and send temperature no matter if we have data from net
-    // because this might be important for other applications
-    ReadDSTemp(); 
-    sendTemperature();
+    Serial.println("Refresh weather");
+    updateWeather();
   }
+
+  if (IS_SET(_TIME_SERVER_URL_) && elapsed(millis(), timeServerAttempt, timeServerOk ? UPDATE_TIME_SERVER : RETRY_TIME_SERVER))
+  {
+    Serial.println("Refresh time server");
+    updateTimeServer();
+  }
+}
+
+/**
+ * show a 7 segment glyph (clocklogic::SEG_* bits) on a digit
+ */
+void setGlyph(byte position, uint8_t segments, CRGB color)
+{
+  // led order inside a digit, same as in DIGIT
+  static const uint8_t SEG_ORDER[] = {clocklogic::SEG_E, clocklogic::SEG_F, clocklogic::SEG_D, clocklogic::SEG_G,
+                                      clocklogic::SEG_A, clocklogic::SEG_C, clocklogic::SEG_B};
+  byte numbers[] = {0, 7, 16, 23, 30, 37, 44, 51};
+  for (int i = 0; i < 7; i++)
+  {
+    leds[numbers[position] + i] = (segments & SEG_ORDER[i]) ? color : backgroundColor;
+  }
+}
+
+void displayNoticeRow(const clocklogic::RowLayout &row, byte firstDigit, CRGB color, clocklogic::NoticeStyle style)
+{
+  color.nscale8(clocklogic::styleLevel(style, millis() - notice.start));
+  for (byte i = 0; i < 4; i++)
+  {
+    setGlyph(firstDigit + i, row.segments[i], color);
+  }
+}
+
+void displayNotice()
+{
+  if (notice.hasTop)
+  {
+    displayNoticeRow(notice.top, 0, notice.topColor, notice.topStyle);
+    CRGB dotColor = notice.topColor;
+    dotColor.nscale8(clocklogic::styleLevel(notice.topStyle, millis() - notice.start));
+    leds[DOT_UPPER_LED] = (notice.top.dots & clocklogic::DOT_UPPER) ? dotColor : backgroundColor;
+    leds[DOT_LOWER_LED] = (notice.top.dots & clocklogic::DOT_LOWER) ? dotColor : backgroundColor;
+  }
+  if (notice.hasBottom)
+  {
+    displayNoticeRow(notice.bottom, 4, notice.bottomColor, notice.bottomStyle);
+  }
+}
+
+/**
+ * [r,g,b] from json, keeps the default if missing, false if it is malformed
+ */
+bool readColor(JsonVariant value, CRGB &color)
+{
+  if (value.isNull())
+    return true;
+
+  JsonArray rgb = value.as<JsonArray>();
+  if (rgb.isNull() || rgb.size() != 3)
+    return false;
+
+  for (int i = 0; i < 3; i++)
+  {
+    if (!rgb[i].is<int>() || rgb[i].as<int>() < 0 || rgb[i].as<int>() > 255)
+      return false;
+  }
+  color = CRGB(rgb[0].as<int>(), rgb[1].as<int>(), rgb[2].as<int>());
+  return true;
+}
+
+/**
+ * POST /notice {"top":"Er:PL","bottom":" 523","delay":30,"top_color":[255,0,0],"bottom_color":[255,255,255],
+ *               "top_style":"fast_blink","bottom_style":"simple","night_dim":true}
+ */
+void handleNotice()
+{
+  if (IS_SET(_NOTICE_TOKEN_) && server.header("Authorization") != String("Bearer ") + _NOTICE_TOKEN_)
+  {
+    server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) || !doc.is<JsonObject>())
+  {
+    server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+    return;
+  }
+
+  Notice next;
+  next.topColor = clockColor;
+  next.bottomColor = CRGB::White;
+  if (!readColor(doc["top_color"], next.topColor) || !readColor(doc["bottom_color"], next.bottomColor))
+  {
+    server.send(400, "application/json", "{\"error\":\"color must be [r,g,b], 0-255\"}");
+    return;
+  }
+
+  next.duration = clocklogic::noticeDurationMs(doc["delay"].is<long>(), doc["delay"] | 0L);
+  next.hasTop = doc["top"].is<const char *>();
+  next.hasBottom = doc["bottom"].is<const char *>();
+  next.top = clocklogic::layoutRow(doc["top"] | "", true);
+  next.bottom = clocklogic::layoutRow(doc["bottom"] | "", false);
+  next.topStyle = clocklogic::parseStyle(doc["top_style"] | "simple");
+  next.bottomStyle = clocklogic::parseStyle(doc["bottom_style"] | "simple");
+  next.nightDim = doc["night_dim"] | true;
+  next.start = millis();
+  next.active = next.duration > 0 && (next.hasTop || next.hasBottom);
+
+  // a newer notice replaces the current one, delay 0 clears it
+  notice = next;
+  Serial.printf("notice %s for %lu ms\n", notice.active ? "shown" : "cleared", (unsigned long)notice.duration);
+  server.send(200, "application/json", notice.active ? "{\"status\":\"shown\"}" : "{\"status\":\"cleared\"}");
 }

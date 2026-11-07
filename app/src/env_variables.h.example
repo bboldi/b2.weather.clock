@@ -2,15 +2,38 @@
 
 #define _CONFIG_AP_PASSWORD_ ""
 
+// location of the weather: true = detect it from the public ip (ip-api.com),
+// the default location is used until that works
+#define _AUTO_LOCATION_ true
+#define _DEFAULT_LAT_ 44.8125 // Belgrade
+#define _DEFAULT_LON_ 20.4612
+
+// time: UTC comes from NTP. The optional time server gives the UTC offset (and a backup time).
+// It must return json with at least: {"utc_offset":"+01:00","unixtime":1794044207}
+// You can host your own: https://github.com/bboldi/b2.ipTotim
+#define _TIME_SERVER_URL_ ""
+// used when the time server is not set or not reachable, POSIX TZ format
+#define _FALLBACK_TZ_ "CET-1CEST,M3.5.0,M10.5.0/3" // Belgrade
+
+// temperature unit, the color thresholds below are in this unit too
+#define _USE_FAHRENHEIT_ false
+
+// temperature colors fade between these points: freezing blue, cold light blue, normal gold, hot red
 #define _TEMP_FREEZING_ 0
 #define _TEMP_COLD_ 18
 #define _TEMP_NORMAL_ 21
 #define _TEMP_HOT_ 25
-#define _TEMP_SUFFIX_ ",54,51,53,56," // "c"
-// #define _TEMP_SUFFIX_ ",51,52,54,55," // "F"
+
+// night mode: reduced brightness between these hours (local time), brightness 0-255
+#define _NIGHT_START_HOUR_ 23
+#define _NIGHT_END_HOUR_ 7
+#define _NIGHT_BRIGHTNESS_ 128
 
 #define _SEND_TEMP_URI ""
 #define _SEND_TEMP_USER ""
 #define _SEND_TEMP_PASS ""
 
 #define _DO_FADE false
+
+// notice endpoint (POST /notice): if set, calls need the header "Authorization: Bearer <token>"
+#define _NOTICE_TOKEN_ ""

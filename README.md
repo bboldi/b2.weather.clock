@@ -1,7 +1,68 @@
 # b2.weather.clock
 
-Before trying to compile the source code, rename `app/src/env_variables.h.example` to `app/src/env_variables.h` and set your openweathermap.org api key ( https://openweathermap.org/appid )
+An ESP8266 (D1 mini) LED wall clock. It shows the local time, the weather forecast, and the outside and inside temperatures. Other systems, such as Home Assistant, can also send it short texts to show.
 
 Tutorial Video: https://youtu.be/0P77SvR9b40
 
 Thingiverse: https://www.thingiverse.com/thing:3883019
+
+## Setup
+
+1. Copy `app/src/env_variables.h.example` to `app/src/env_variables.h`. The copy is gitignored, so your keys stay local.
+2. Set your openweathermap.org API key (https://openweathermap.org/appid).
+3. Check the other settings in the same file. Each one is explained there:
+   - location: auto or a default
+   - time server
+   - fallback time zone
+   - temperature unit and colors
+   - night mode
+   - temperature upload
+   - notice token
+4. Build and upload: `cd app && pio run -t upload`
+5. On the first boot, or while the button is held during boot, the clock opens the `b2.weather.clock` Wi-Fi access point. Connect to it and choose your network.
+
+Unit tests of the hardware independent logic (`app/lib/clock_logic`): `cd app && pio test -e native`
+
+## How it behaves when something fails
+
+The clock never stops to show an error screen. It shows what it still knows and retries in the background.
+
+- **Time:** the time comes from NTP. If NTP fails, the optional time server is the backup. Until the first sync, dashes are shown. If there was no sync for 3 hours, the dots turn slightly red.
+- **UTC offset:** the UTC offset comes from the time server, which is fetched hourly. If the time server is not set, or its offset is older than 3 hours, the fallback time zone rule is used.
+- **Weather:** the weather is fetched every 15 minutes, and every minute after a failure. If there is no fresh weather for 2 hours, the forecast icon and the outside temperature are hidden.
+- **Location:** if auto location fails, the default location is used, and auto location is tried again later.
+- **Wi-Fi:** if Wi-Fi fails, the clock keeps running offline. The config access point opens only when no network is saved, or when the button is held during boot.
+- **Night mode:** from 23:00 to 07:00 the brightness is reduced. This is configurable.
+
+## Time server
+
+The time server is optional. It must answer a GET request with JSON like `{"utc_offset":"+01:00","unixtime":1794044207}`. You can host your own with https://github.com/bboldi/b2.ipTotim.
+
+## Notice
+
+Other systems, such as Home Assistant, can show a short text on the clock for a while:
+
+```
+curl -X POST http://<clock-ip>/notice \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"top":"Er:PL","bottom":" 523","delay":30,"top_color":[255,0,0],"bottom_color":[255,255,255],"top_style":"fast_blink","bottom_style":"simple","night_dim":true}'
+```
+
+- **Fields:** every field is optional.
+  - A missing row keeps its normal content.
+  - A missing color uses the normal color.
+- **Token:** the `Authorization` header is needed only when `_NOTICE_TOKEN_` is set.
+- **Characters:**
+  - Each letter has one form, whichever reads best, so upper and lower case look the same.
+  - Characters that 7 segments cannot show are dropped.
+  - At most 4 characters are kept, right aligned.
+  - The supported characters are digits, letters, space, `-`, `_`, `=`, `*` (degree), `[`, `]` and `?`.
+- **Dots:** on the top row, a `.`, `:` or `'` as the 3rd character lights the lower dot, both dots or the upper dot.
+- **`delay`:**
+  - The value is in seconds. The default is 60 and the maximum is 3600.
+  - `0` clears the current notice.
+  - A newer notice replaces the current one.
+  - The button dismisses the current notice.
+- **Styles:** `simple`, `fade_in_out`, `slow_blink` and `fast_blink`, set per row.
+- **Night mode:** `"night_dim": false` keeps full brightness during Night mode.
+- **Responses:** 200 on success, 400 for invalid JSON or color, 401 for a wrong token.
