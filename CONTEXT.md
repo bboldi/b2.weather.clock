@@ -52,6 +52,10 @@ _Avoid_: line, half
 A forecast icon that another system sends to the clock. It replaces the real forecast icon for a set time, in the same way a Notice replaces a Row.
 _Avoid_: icon override
 
+**Status light**:
+One of four segments of the first bottom-row digit (top, upper right, lower right, bottom). Another system, such as Home Assistant, sets a status light to a color to signal a state, for example that the heating is on. It stays lit while the temperature switches between inside and outside, until it is turned off or its time runs out. It shows only together with the temperature, so a Notice on the bottom row hides it. A restart turns all status lights off.
+_Avoid_: segment, flag, indicator (the indicator is the inside / outside sign)
+
 **Button gesture**:
 A click, a double click or a long press on the clock's button. The clock reports every gesture to the owner's home automation. A click also switches between the inside and outside temperature, or dismisses the current Notice and Weather notice.
 _Avoid_: button event, tap

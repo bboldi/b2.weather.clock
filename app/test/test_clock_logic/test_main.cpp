@@ -207,6 +207,16 @@ void test_notice_duration()
   TEST_ASSERT_EQUAL_UINT32(0, noticeDurationMs(true, -5));
 }
 
+void test_status_light_duration()
+{
+  TEST_ASSERT_EQUAL_UINT32(NOTICE_FOREVER, statusLightDurationMs(false, 0));
+  TEST_ASSERT_EQUAL_UINT32(NOTICE_FOREVER, statusLightDurationMs(true, -1));
+  TEST_ASSERT_EQUAL_UINT32(0, statusLightDurationMs(true, 0));
+  TEST_ASSERT_EQUAL_UINT32(0, statusLightDurationMs(true, -5));
+  TEST_ASSERT_EQUAL_UINT32(86400000, statusLightDurationMs(true, 86400));
+  TEST_ASSERT_EQUAL_UINT32(172800000, statusLightDurationMs(true, 999999));
+}
+
 static std::string joined(const LogRing<16> &r)
 {
   const char *a, *b;
@@ -417,6 +427,7 @@ int main(int, char **)
   RUN_TEST(test_top_row_without_separator);
   RUN_TEST(test_styles);
   RUN_TEST(test_notice_duration);
+  RUN_TEST(test_status_light_duration);
   RUN_TEST(test_gradient_ends_are_clamped);
   RUN_TEST(test_gradient_interpolates_between_stops);
   RUN_TEST(test_gradient_multiple_stops);

@@ -104,6 +104,20 @@ struct WeatherNotice
   clocklogic::NoticeStyle style = clocklogic::STYLE_SIMPLE;
 } weatherNotice;
 
+// status lights: free segments of the first bottom-row digit, set from outside to signal a state
+struct StatusLight
+{
+  const char *name;
+  byte led;
+  bool active;
+  unsigned long start;
+  uint32_t duration;
+  CRGB color;
+  clocklogic::NoticeStyle style;
+} statusLights[] = {
+    {"top", 34}, {"upper_right", 36}, {"lower_right", 35}, {"bottom", 32}};
+bool statusLightsShown = false; // drawn this frame, the style is applied after the transitions
+
 uint32_t sensorRecoveries = 0;
 uint32_t retriedReads = 0;
 uint32_t sensorReads = 0;
@@ -346,7 +360,17 @@ void handleDebug()
   }
 
   long secs = localSecondsOfDay();
-  char status[600];
+  char lights[160] = "";
+  for (StatusLight &l : statusLights)
+  {
+    if (l.active)
+    {
+      size_t n = strlen(lights);
+      snprintf(lights + n, sizeof(lights) - n, " %s %d,%d,%d style %d left %lds", l.name, l.color.r, l.color.g, l.color.b,
+               l.style, l.duration == clocklogic::NOTICE_FOREVER ? -1L : (long)((l.duration - (millis() - l.start)) / 1000));
+    }
+  }
+  char status[760];
   snprintf(status, sizeof(status),
            "firmware: %s %s\n"
            "uptime: %lus\n"
@@ -359,6 +383,7 @@ void handleDebug()
            "inside: %s %.2f C, reads %lu, ok on 2nd read %lu, recovered by bus reset %lu\n"
            "temp send: last %.2f C -> %d, %lds ago\n"
            "notice: %s, weather notice: %s\n"
+           "status lights:%s\n"
            "\n--- log ---\n",
            __DATE__, __TIME__, millis() / 1000, ESP.getResetReason().c_str(),
            ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(),
@@ -371,7 +396,8 @@ void handleDebug()
            forecast.c_str(), temperature,
            insideOk ? "ok" : "NO SENSOR", insideTempC, (unsigned long)sensorReads, (unsigned long)retriedReads, (unsigned long)sensorRecoveries,
            lastSendValue, lastSendCode, lastSendAt ? (long)((millis() - lastSendAt) / 1000) : -1L,
-           notice.active ? "active" : "none", weatherNotice.active ? weatherNotice.icon.c_str() : "none");
+           notice.active ? "active" : "none", weatherNotice.active ? weatherNotice.icon.c_str() : "none",
+           lights[0] ? lights : " none");
 
   const char *a, *b;
   size_t aLen, bLen;
@@ -804,6 +830,7 @@ void setup()
   server.collectHeaders("Authorization");
   server.on("/notice", HTTP_POST, handleNotice);
   server.on("/weather", HTTP_POST, handleWeatherNotice);
+  server.on("/status_light", HTTP_POST, handleStatusLight);
 #if _DEBUG_
   server.on("/debug", HTTP_GET, handleDebug);
 #endif
@@ -982,6 +1009,12 @@ void setTemperature(int temp, bool outside)
   if(temp<99)
   {
     turnOnLeds( outside ? ",31," : ",30,", outside ? indicatorColorOut : indicatorColorIn, false);
+    for (StatusLight &l : statusLights)
+    {
+      if (l.active)
+        leds[l.led] = l.color;
+    }
+    statusLightsShown = true;
   }
 }
 
@@ -1098,6 +1131,16 @@ void loop()
 
   tempDisplaySwitch();
 
+  for (StatusLight &l : statusLights)
+  {
+    if (l.active && l.duration != clocklogic::NOTICE_FOREVER && elapsed(millis(), l.start, l.duration))
+    {
+      l.active = false;
+      logf("status light %s timed out", l.name);
+    }
+  }
+  statusLightsShown = false;
+
   // only show what we have: outside needs fresh weather, inside needs the sensor
 
   bool weatherOk = hasWeather && !elapsed(millis(), weatherUpdated, WEATHER_MAX_AGE);
@@ -1174,6 +1217,7 @@ void loop()
 
   animateDigits();
   applyNoticeStyles();
+  applyStatusLightStyles();
 
   // update display
   FastLED.show();
@@ -1412,6 +1456,22 @@ void applyNoticeStyles()
 }
 
 /**
+ * Blink / fade of the status lights, after the transitions; a bottom-row notice draws over them
+ */
+void applyStatusLightStyles()
+{
+  if (!statusLightsShown || (notice.active && notice.hasBottom))
+  {
+    return;
+  }
+  for (StatusLight &l : statusLights)
+  {
+    if (l.active)
+      leds[l.led].nscale8(clocklogic::styleLevel(l.style, millis() - l.start));
+  }
+}
+
+/**
  * Show two texts on the rows right away, used while the loop does not run (OTA)
  */
 void showRows(const char *top, const char *bottom)
@@ -1523,4 +1583,52 @@ void handleWeatherNotice()
   logf("weather notice %s icon '%s' delay %ld", weatherNotice.active ? "shown" : "cleared", weatherNotice.icon.c_str(),
        duration == clocklogic::NOTICE_FOREVER ? -1L : (long)duration / 1000);
   server.send(200, "application/json", weatherNotice.active ? "{\"status\":\"shown\"}" : "{\"status\":\"cleared\"}");
+}
+
+/**
+ * POST /status_light {"light":"upper_right","color":[255,120,0],"style":"slow_blink","delay":-1}
+ * delay missing or -1: until turned off, 0 or color missing / [0,0,0]: off
+ */
+void handleStatusLight()
+{
+  if (!authorized())
+  {
+    server.send(401, "application/json", "{\"error\":\"unauthorized\"}");
+    return;
+  }
+
+  JsonDocument doc;
+  if (deserializeJson(doc, server.arg("plain")) || !doc.is<JsonObject>())
+  {
+    server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+    return;
+  }
+
+  StatusLight *light = nullptr;
+  for (StatusLight &l : statusLights)
+  {
+    if (!strcmp(l.name, doc["light"] | ""))
+      light = &l;
+  }
+  if (!light)
+  {
+    server.send(400, "application/json", "{\"error\":\"light must be top, upper_right, lower_right or bottom\"}");
+    return;
+  }
+
+  CRGB color = CRGB::Black;
+  if (!readColor(doc["color"], color))
+  {
+    server.send(400, "application/json", "{\"error\":\"color must be [r,g,b], 0-255\"}");
+    return;
+  }
+
+  light->color = color;
+  light->style = clocklogic::parseStyle(doc["style"] | "simple");
+  light->duration = clocklogic::statusLightDurationMs(doc["delay"].is<long>(), doc["delay"] | 0L);
+  light->start = millis();
+  light->active = light->duration > 0 && (bool)color;
+  logf("status light %s %s color %d,%d,%d delay %ld", light->name, light->active ? "on" : "off", color.r, color.g, color.b,
+       light->duration == clocklogic::NOTICE_FOREVER ? -1L : (long)light->duration / 1000);
+  server.send(200, "application/json", light->active ? "{\"status\":\"on\"}" : "{\"status\":\"off\"}");
 }

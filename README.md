@@ -107,6 +107,28 @@ curl -X POST http://<clock-ip>/weather \
 - **Icon code:** an OpenWeather icon code, `{"icon":"10d"}`, also works and uses the clock's own colors. When colors are given, they win.
 - **Independence:** the Weather notice is separate from the text notice. A click clears both.
 
+## Status lights
+
+The left digit of the bottom row shows whether the temperature is inside (lower left segment) or outside (upper left segment). Its other four segments are **status lights**: other systems can set each of them to a color to signal a state, for example orange upper right = the heating is on, red lower right = take the bin out today.
+
+```
+curl -X POST http://<clock-ip>/status_light \
+  -H 'Authorization: Bearer <token>' \
+  -d '{"light":"upper_right","color":[255,100,0],"style":"slow_blink","delay":-1}'
+```
+
+- **`light`:** `top`, `upper_right`, `lower_right` or `bottom`. One request sets one light; the others do not change.
+- **`color`:** `[r,g,b]`, 0-255. A missing color or `[0,0,0]` turns the light off.
+- **`style`:** works as for a notice (`simple`, `fade_in_out`, `slow_blink`, `fast_blink`).
+- **`delay`:**
+  - In seconds, at most 172800 (48 hours). After it, the light turns off by itself.
+  - Missing or `-1` keeps the light on until it is turned off.
+  - `0` turns it off.
+- **When they show:** together with the temperature, inside and outside alike. A notice on the bottom row hides them until it ends. The button does not clear them.
+- **Night mode:** dimmed like everything else.
+- **Restart:** the lights are kept in RAM only, so a restart or an OTA update turns them all off. Send the state again when it changes and, for example, when Home Assistant starts.
+- **Token and responses:** as for a notice. 400 for an unknown light, invalid JSON or color. `GET /debug` lists the lights that are on.
+
 ## Button
 
 - **Click:** switches between the inside and outside temperature, or dismisses the active notices.

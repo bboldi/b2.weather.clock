@@ -341,6 +341,18 @@ inline uint32_t noticeDurationMs(bool given, long seconds)
   return (uint32_t)(seconds > 3600 ? 3600 : seconds) * 1000;
 }
 
+/**
+ * Status light duration in ms from the "delay" seconds: missing or -1 -> forever, 0 clears, capped at 48 hours
+ */
+inline uint32_t statusLightDurationMs(bool given, long seconds)
+{
+  if (!given || seconds == -1)
+    return NOTICE_FOREVER;
+  if (seconds <= 0)
+    return 0;
+  return (uint32_t)(seconds > 172800 ? 172800 : seconds) * 1000;
+}
+
 // ---- Debug log ----
 
 /**
